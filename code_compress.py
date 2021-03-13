@@ -68,6 +68,10 @@ class ANS:
 		sequence = torch.from_numpy(sequence).to(self.device)
 		return x, sequence
 
+def check_states(states):
+	test = np.array(states, dtype=np.uint32)
+	states = test.tolist()
+	return states
 def compress(quantbits, nz, bitswap, gpu):
 	# model and compression params
 	# zdim = 1 * 16 * 16
@@ -80,6 +84,7 @@ def compress(quantbits, nz, bitswap, gpu):
 	xdim = height**2 * 1
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
+	# his demo also use float64 for type
 	type = torch.float64 # datatype throughout compression
 	device = f"cuda:{gpu}" # gpu
 
@@ -107,7 +112,7 @@ def compress(quantbits, nz, bitswap, gpu):
 
 	# compression experiment params
 	experiments = 1
-	ndatapoints = 1
+	ndatapoints = 10
 	decompress = False
 
 	# <=== MODEL ===>
@@ -171,10 +176,17 @@ def compress(quantbits, nz, bitswap, gpu):
 		# < ===== COMPRESSION ===>
 		# initialize compression
 		model.compress()
-		# todo is this state the state stack? and should its size bigger than 50000
-		# or it means it starts with 10000 ststes.
+		#
+		# it means it starts with 10000 sta tes.
+
+		# default it generates int64 data, but it set it to np.uint32
+		# but int changed the state back to int64
+		# clear no value overflow
 		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=10000, dtype=np.uint32))) # fill state list with 'random' bits
-		state[-1] = state[-1] << 32
+
+		#todo  value overflow, what's so used for
+		# state[-1] = state[-1] << 32
+		#state = check_states(state)
 		initialstate = state.copy()
 		restbits = None
 
@@ -204,7 +216,10 @@ def compress(quantbits, nz, bitswap, gpu):
 
 					# decode z
 					state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
-
+					#state = check_states(state)
+					test_state = np.array(state)
+					# todo state is int64
+					ddtype = test_state.dtype
 					# save excess bits for calculations
 					if xi == zi == 0:
 						restbits = state.copy()
@@ -286,11 +301,12 @@ def compress(quantbits, nz, bitswap, gpu):
 
 		os.makedirs(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
 		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "wb") as fp:
+			# #state = check_states(state)
 			pickle.dump(state, fp)
 
 		state = None
 		# open state file
-		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_experiment{ei + 1}", "rb") as fp:
+		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "rb") as fp:
 			state = pickle.load(fp)
 
 		if not decompress:
