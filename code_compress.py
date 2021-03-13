@@ -72,11 +72,12 @@ def compress(quantbits, nz, bitswap, gpu):
 	# model and compression params
 	# zdim = 1 * 16 * 16
 	# the size of latent z; is X_h/2
-	zdim = 1 * 4 * 4
+	height = 4
+	zdim = 1 * height/2 * height/2
 	zrange = torch.arange(zdim)
 	#my the size of image
 	# xdim = 32 ** 2 * 1
-	xdim = 8**2 *1
+	xdim = height**2 *1
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
 	type = torch.float64 # datatype throughout compression
@@ -110,7 +111,7 @@ def compress(quantbits, nz, bitswap, gpu):
 	decompress = False
 
 	# <=== MODEL ===>
-	model = Model(xs = (1, 8, 8), nz=nz, zchannels=1, nprocessing=4, kernel_size=3, resdepth=8, reswidth=reswidth).to(device)
+	model = Model(xs = (1, height, height), nz=nz, zchannels=1, nprocessing=4, kernel_size=3, resdepth=8, reswidth=reswidth).to(device)
 	model.load_state_dict(
 		torch.load(f'params/code/nz{nz}',
 				   map_location=lambda storage, location: storage
@@ -136,8 +137,8 @@ def compress(quantbits, nz, bitswap, gpu):
 	# transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
 	from code_train import CodesToTensor
 	from dataset import  CodesNpzDataset
-	transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
-
+	# transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
+	transform_ops = transforms.Compose([CodesToTensor(), ToInt()])
 	# test_set = datasets.MNIST(root="model/data/mnist", train=False, transform=transform_ops, download=True)
 	codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
