@@ -31,10 +31,8 @@ class Model(nn.Module):
         self.nprocessing = nprocessing
         # latent height/width is always 16,
         # the number of channels depends on the dataset
-        # todo let's say z channel is
-        # self.zdim = (self.zchannels, 16, 16)
-        # for bot codes ,this should be [4,4]
-        self.zdim = (self.zchannels, 4, 4)
+        # zdim has CxH/2 x H/2
+        self.zdim = (self.zchannels, int(xs[1]/2), int(xs[1]/2))
         self.resdepth = resdepth
         self.reswidth = reswidth
         self.kernel_size = kernel_size
@@ -869,13 +867,13 @@ if __name__ == '__main__':
     # hyperparameters, input from command line
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', default=99, type=int, help="seed for experiment reproducibility")
-    parser.add_argument('--nz', default=8, type=int, help="number of latent variables, greater or equal to 1")
-    parser.add_argument('--zchannels', default=1, type=int, help="number of channels for the latent variables")
+    parser.add_argument('--nz', default=2, type=int, help="number of latent variables, greater or equal to 1")
+    parser.add_argument('--zchannels', default=4, type=int, help="number of channels for the latent variables")
     parser.add_argument('--nprocessing', default=4, type=int, help='number of processing layers')
     parser.add_argument('--gpu', default=0, type=int, help="number of gpu's to distribute optimization over")
     parser.add_argument('--interval', default=100, type=int, help="interval for logging/printing of relevant values")
     parser.add_argument('--epochs', default=10000000000, type=int, help="number of sweeps over the dataset (epochs)")
-    parser.add_argument('--blocks', default=8, type=int, help="number of ResNet blocks")
+    parser.add_argument('--blocks', default=4, type=int, help="number of ResNet blocks")
     parser.add_argument('--width', default=64, type=int, help="number of channels in the convolutions in the ResNet blocks")
     parser.add_argument('--dropout', default=0.2, type=float, help="dropout rate of the hidden units")
     parser.add_argument('--kernel', default=3, type=int, help="size of the convolutional filter (kernel) in the ResNet blocks")
@@ -950,14 +948,13 @@ if __name__ == '__main__':
         def __call__(self, pic):
             # return pic * 255
             return pic * 511.0
+    class ToFloat:
+        def __call__(self, code):
+            return code.to(torch.float32)
     # set data pre-processing transforms
     # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
-    transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
-    # store MNIST data shape
-    # xs = (1, 32, 32)
-    # that's why !!! I forget to change the top level to bot one
-    xs = (1, 8, 8)
-
+    transform_ops = transforms.Compose([ToFloat()])
+    xs = (1, 4, 4)
     if root_process:
         print("Load model")
 
@@ -1018,7 +1015,7 @@ if __name__ == '__main__':
     #         test_set, num_replicas=hvd.size(), rank=hvd.rank())
 
     # setup mini-batch enumerator for both train-set and test-set
-    end_class = 10
+    end_class = 100
     num_workers = 0
     classes = [i for i in range(end_class)]
     codes_idx = get_indices(codes_ds, classes)
