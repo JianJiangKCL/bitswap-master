@@ -407,7 +407,7 @@ class Model(nn.Module):
                 mu = self.gen_mu(h)
 
                 # scale parameter of the conditional Logistic distribution
-                # set a minimal value for the scale parameter of the bottom generative model
+
                 scale = ((2. / 255.) / 8.) + modules.softplus(self.gen_std)
 
             # deeper latent layers
@@ -460,6 +460,7 @@ class Model(nn.Module):
 
             # store the inference model loss
             zsamples[i] = z_next.flatten(1)
+            # logistic_logp calculate the log-probability of x (the third arg) under a Logistic(mu, scale) distribution
             logq = torch.sum(random.logistic_logp(mu, scale, z_next), dim=2)
             logenc[i] += logq
 
@@ -470,6 +471,7 @@ class Model(nn.Module):
             # store the generative model loss
             if i == 0:
                 # if bottom (zi = 1) generative model, evaluate loss using discretized Logistic distribution
+                # discretized_logistic_logp function to calculate the log-probability of x under a discretized Logistic(mu, scale) distribution
                 logp = torch.sum(random.discretized_logistic_logp(mu, scale, x), dim=1)
                 logrecon = logp
 

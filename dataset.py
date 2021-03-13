@@ -223,7 +223,10 @@ class CodesNpzDataset(data.Dataset):
 		self.targets = d['label']
 		self.transform = transform
 		self.max_value = max_value
-
+		# BxCxHxW
+		# unsqueeze codes in one shot rather than everytime getitem
+		self.code_t = np.expand_dims(self.code_t, axis=1)
+		self.code_b = np.expand_dims(self.code_b, axis=1)
 	def change_range(self, code):
 		code = code.float().div(self.max_value).unsqueeze(0)
 
@@ -242,8 +245,9 @@ class CodesNpzDataset(data.Dataset):
 			# code_b = code_b / self.max_value * 2.0 - 1.0
 			code_t, code_b = self.transform(code_t), self.transform(code_b)
 		# make codes to CxHxW
-		return code_t.unsqueeze(0), code_b.unsqueeze(0), target
+		# return code_t.unsqueeze(0)#, code_b.unsqueeze(0), target
 
+		return code_t, code_b, target
 	def __len__(self):
 		return len(self.code_t)
 

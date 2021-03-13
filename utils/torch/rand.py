@@ -3,6 +3,7 @@ import numpy as np
 import utils.torch.modules as modules
 
 # function to transform "noise" using a given mean and scale
+#reparameterize
 def transform(eps, mu, scale):
     sample = mu + scale * eps
     return sample
@@ -15,7 +16,9 @@ def logistic_eps(shape, device, bound=1e-5):
     # clamp between two bounds to ensure numerical stability
     u = torch.clamp(u, min=bound, max=1 - bound)
 
-    # transform to a sample from the Logistic distribution
+    # transform u to a sample from the Logistic distribution
+    # eps is epsilon
+    # log1p Returns a new tensor with the natural logarithm of (1 + input).
     eps = torch.log(u) - torch.log1p(-u)
     return eps
 

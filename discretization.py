@@ -2,9 +2,10 @@ from utils.torch.rand import *
 from tqdm import tqdm
 import os
 from torchvision import datasets, transforms
-from torch.utils.data import *
+# from torch.utils.data import *
 from sklearn.preprocessing import KBinsDiscretizer
-
+from torch.utils.data import DataLoader
+from dataset import  CodesNpzDataset
 # function that returns discretization bin endpoints and centres
 def discretize(nz, quantbits, type, device, model, dataset):
     # number of samples per bin
@@ -29,8 +30,9 @@ def discretize(nz, quantbits, type, device, model, dataset):
             # create class that scales up the data to [0,255] if called
             class ToInt:
                 def __call__(self, pic):
-                    return pic * 255
-
+                    # return pic * 255
+                    return pic * 511
+            from code_train import CodesToTensor, CodesNpzDataset
             # get the train-sets of the corresponding datasets
             if dataset == "cifar":
                 transform_ops = transforms.Compose([transforms.ToTensor(), ToInt()])
@@ -39,10 +41,14 @@ def discretize(nz, quantbits, type, device, model, dataset):
                 transform_ops = transforms.Compose([transforms.ToTensor(), ToInt()])
                 train_set = modules.ImageNet(root='model/data/imagenet/train', file='train.npy', transform=transform_ops)
             else:
-                transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
-                train_set = datasets.MNIST(root="model/data/mnist", train=True, transform=transform_ops, download=True)
+                transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
+                codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+                train_set = CodesNpzDataset(codes_path, transform=transform_ops)
+                # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
+                # train_set = datasets.MNIST(root="model/data/mnist", train=True, transform=transform_ops, download=True)
 
             # set-up a batch-loader for the dataset
+            classes = [i for i in range(100)]
             train_loader = DataLoader(
                 dataset=train_set,
                 batch_size=128, shuffle=True, drop_last=True)
