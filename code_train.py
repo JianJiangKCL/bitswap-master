@@ -954,7 +954,8 @@ if __name__ == '__main__':
     # set data pre-processing transforms
     # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
     transform_ops = transforms.Compose([ToFloat()])
-    xs = (1, 4, 4)
+    height = 4
+    xs = (1, height, height)
     if root_process:
         print("Load model")
 
@@ -1017,18 +1018,11 @@ if __name__ == '__main__':
     # setup mini-batch enumerator for both train-set and test-set
     end_class = 100
     num_workers = 0
-    classes = [i for i in range(end_class)]
-    codes_idx = get_indices(codes_ds, classes)
-    codes_val_idx = codes_idx[:int(len(codes_idx) / 10)]
-    codes_training_idx = codes_idx
+
     # len(codes_ds)
     train_set, val_set = torch.utils.data.random_split(
         codes_ds, [len(codes_ds)-1000, 1000])
-    # train_loader = DataLoader(codes_ds, batch_size=batch_size, num_workers=num_workers, drop_last=False,
-    #                           sampler=SubsetRandomSampler(codes_training_idx))
-    #
-    # test_loader = DataLoader(codes_ds, batch_size=batch_size, num_workers=num_workers, drop_last=False,
-    #                          sampler=SubsetRandomSampler(codes_val_idx))
+
     train_loader = torch.utils.data.DataLoader(
         dataset=train_set, sampler=None,
         batch_size=batch_size, shuffle=False if distributed else True, drop_last=True, **kwargs)

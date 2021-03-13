@@ -6,6 +6,7 @@ from torchvision import datasets, transforms
 from sklearn.preprocessing import KBinsDiscretizer
 from torch.utils.data import DataLoader
 from dataset import  CodesNpzDataset
+
 # function that returns discretization bin endpoints and centres
 def discretize(nz, quantbits, type, device, model, dataset):
     # number of samples per bin
@@ -40,8 +41,11 @@ def discretize(nz, quantbits, type, device, model, dataset):
             elif dataset == "imagenet" or dataset == "imagenetcrop":
                 transform_ops = transforms.Compose([transforms.ToTensor(), ToInt()])
                 train_set = modules.ImageNet(root='model/data/imagenet/train', file='train.npy', transform=transform_ops)
-            else:
-                transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
+            elif dataset == "code":
+                class ToFloat:
+                    def __call__(self, code):
+                        return code.to(torch.float32)
+                transform_ops = transforms.Compose([ToFloat()])
                 codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
                 train_set = CodesNpzDataset(codes_path, transform=transform_ops)
                 # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])

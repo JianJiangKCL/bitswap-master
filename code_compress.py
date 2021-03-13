@@ -73,11 +73,11 @@ def compress(quantbits, nz, bitswap, gpu):
 	# zdim = 1 * 16 * 16
 	# the size of latent z; is X_h/2
 	height = 4
-	zdim = 1 * height/2 * height/2
+	zdim = int(args.zchannels * height/2 * height/2)
 	zrange = torch.arange(zdim)
 	#my the size of image
 	# xdim = 32 ** 2 * 1
-	xdim = height**2 *1
+	xdim = height**2 * 1
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
 	type = torch.float64 # datatype throughout compression
@@ -88,9 +88,9 @@ def compress(quantbits, nz, bitswap, gpu):
 		# reswidth = 61
 		reswidth = 64
 	elif nz == 4:
-		reswidth = 62
+		reswidth = 64
 	elif nz == 2:
-		reswidth = 63
+		reswidth = 64
 	else:
 		reswidth = 64
 	assert nz > 0
@@ -106,12 +106,12 @@ def compress(quantbits, nz, bitswap, gpu):
 	torch.backends.cudnn.benchmark = True
 
 	# compression experiment params
-	experiments = 3
-	ndatapoints = 100
+	experiments = 1
+	ndatapoints = 1
 	decompress = False
 
 	# <=== MODEL ===>
-	model = Model(xs = (1, height, height), nz=nz, zchannels=1, nprocessing=4, kernel_size=3, resdepth=8, reswidth=reswidth).to(device)
+	model = Model(xs = (1, height, height), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=3, resdepth=args.blocks, reswidth=reswidth).to(device)
 	model.load_state_dict(
 		torch.load(f'params/code/nz{nz}',
 				   map_location=lambda storage, location: storage
@@ -121,7 +121,7 @@ def compress(quantbits, nz, bitswap, gpu):
 
 	print("Discretizing")
 	# get discretization bins for latent variables
-	zendpoints, zcentres = discretize(nz, quantbits, type, device, model, "mnist")
+	zendpoints, zcentres = discretize(nz, quantbits, type, device, model, "code")
 
 	# get discretization bins for discretized logistic
 	xbins = ImageBins(type, device, xdim)
@@ -130,19 +130,22 @@ def compress(quantbits, nz, bitswap, gpu):
 
 	print("Load data..")
 	# <=== DATA ===>
-	class ToInt:
-		def __call__(self, pic):
-			# return pic * 255
-			return pic * 511
+
+	class ToFloat:
+		def __call__(self, code):
+			return code.to(torch.float32)
 	# transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
 	from code_train import CodesToTensor
 	from dataset import  CodesNpzDataset
-	# transform_ops = transforms.Compose([transforms.Pad(2), CodesToTensor(), ToInt()])
-	transform_ops = transforms.Compose([CodesToTensor(), ToInt()])
-	# test_set = datasets.MNIST(root="model/data/mnist", train=False, transform=transform_ops, download=True)
+
+	# transform_ops = transforms.Compose([ToFloat()])
+	transform_ops = None
+
+
 	codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
 	# sample (experiments, ndatapoints) from test set with replacement
+	# in fact, below if-condition will always go "the first condition" as the right file path should end with .npy
 	if not os.path.exists("bitstreams/code/indices"):
 		randindices = np.random.choice(len(test_set.targets), size=(experiments, ndatapoints), replace=False)
 		np.save("bitstreams/code/indices", randindices)
@@ -168,6 +171,8 @@ def compress(quantbits, nz, bitswap, gpu):
 		# < ===== COMPRESSION ===>
 		# initialize compression
 		model.compress()
+		# todo is this state the state stack? and should its size bigger than 50000
+		# or it means it starts with 10000 ststes.
 		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=10000, dtype=np.uint32))) # fill state list with 'random' bits
 		state[-1] = state[-1] << 32
 		initialstate = state.copy()
@@ -206,6 +211,7 @@ def compress(quantbits, nz, bitswap, gpu):
 						assert len(restbits) > 1, "too few initial bits" # otherwise initial state consists of too few bits
 
 					# generative model
+					# zrange = zrange.to(torch.long)
 					z = zcentres[zi, zrange, zsymtop]
 					mu, scale = model.generate(zi)(given=z)
 					cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t() # most expensive calculation?
@@ -277,7 +283,9 @@ def compress(quantbits, nz, bitswap, gpu):
 			iterator.set_postfix_str(s=f"N:{nets[ei,:xi+1].mean():.2f}±{nets[ei,:xi+1].std():.2f}, D:{nets[ei,:xi+1].mean()-elbos[ei,:xi+1].mean():.4f}, C: {cma[ei,:xi+1].mean():.2f}, T: {totalbits:.0f}", refresh=False)
 
 		# write state to file
-		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_experiment{ei + 1}", "wb") as fp:
+
+		os.makedirs(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
+		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "wb") as fp:
 			pickle.dump(state, fp)
 
 		state = None
@@ -375,6 +383,7 @@ def compress(quantbits, nz, bitswap, gpu):
 	print(f"N:{nets.mean():.4f}±{nets.std():.2f}, E:{elbos.mean():.4f}±{elbos.std():.2f}, D:{nets.mean() - elbos.mean():.6f}")
 
 	# save experiments
+	os.makedirs(f"plots/code{nz}", exist_ok=True)
 	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_nets",nets)
 	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_elbos", elbos)
 	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_cmas",cma)
@@ -383,8 +392,10 @@ def compress(quantbits, nz, bitswap, gpu):
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gpu', default=0, type=int)  # assign to gpu
-	parser.add_argument('--nz', default=8, type=int)  # choose number of latent variables
+	parser.add_argument('--nz', default=2, type=int)  # choose number of latent variables
+	parser.add_argument('--zchannels', default=4, type=int, help="number of channels for the latent variables")
 	parser.add_argument('--quantbits', default=9, type=int)  # choose discretization precision
+	parser.add_argument('--blocks', default=4, type=int, help="number of ResNet blocks")
 	parser.add_argument('--bitswap', default=1, type=int)  # choose whether to use Bit-Swap or not
 
 	args = parser.parse_args()
