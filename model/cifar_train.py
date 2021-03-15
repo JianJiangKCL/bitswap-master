@@ -517,7 +517,7 @@ class Model(nn.Module):
         x_grid = utils.make_grid(x_sample)
 
         # log
-        self.logger.add_image('x_sample', x_grid, epoch)
+        # self.logger.add_image('x_sample', x_grid, epoch)
 
     # function to sample a reconstruction of input data
     def reconstruct(self, x_orig, device, epoch):
@@ -553,7 +553,8 @@ class Model(nn.Module):
         x_grid = utils.make_grid(x_with_recon)
 
         # log
-        self.logger.add_image('x_reconstruct', x_grid, epoch)
+        # todo logger for cifar vision
+        # self.logger.add_image('x_reconstruct', x_grid, epoch)
 
 
 def warmup(model, device, data_loader, warmup_batches, root_process):

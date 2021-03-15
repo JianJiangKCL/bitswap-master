@@ -68,7 +68,7 @@ class ANS:
 
 def decompress(quantbits, nz, gpu, state, nblocks):
     # model and compression params
-    # zdim = 8*16*16
+    zdim = 8*16*16
     zrange = torch.arange(zdim)
     xdim = 32**2 * 3
     xrange = torch.arange(xdim)

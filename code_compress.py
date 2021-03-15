@@ -113,14 +113,22 @@ def compress(quantbits, nz, bitswap, gpu):
 	# compression experiment params
 	experiments = 1
 	ndatapoints = 10
-	decompress = False
+	print('ndatapoint', ndatapoints)
+	#todo decomperss to False
+	decompress = True
 
 	# <=== MODEL ===>
 	model = Model(xs = (1, height, height), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=3, resdepth=args.blocks, reswidth=reswidth).to(device)
+	# model.load_state_dict(
+	# 	torch.load(f'params/code/nz{nz}',
+	# 			   map_location=lambda storage, location: storage
+	# 			   )
+	# )
+	#todo
 	model.load_state_dict(
 		torch.load(f'params/code/nz{nz}',
-				   map_location=lambda storage, location: storage
-				   )
+		           map_location=lambda storage, location: storage
+		           )
 	)
 	model.eval()
 
@@ -149,6 +157,7 @@ def compress(quantbits, nz, bitswap, gpu):
 
 	codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
+	print('len dataset', len(test_set))
 	# sample (experiments, ndatapoints) from test set with replacement
 	# in fact, below if-condition will always go "the first condition" as the right file path should end with .npy
 	if not os.path.exists("bitstreams/code/indices"):
@@ -185,7 +194,7 @@ def compress(quantbits, nz, bitswap, gpu):
 		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=10000, dtype=np.uint32))) # fill state list with 'random' bits
 
 		#todo  value overflow, what's so used for
-		# state[-1] = state[-1] << 32
+		state[-1] = state[-1] << 32
 		#state = check_states(state)
 		initialstate = state.copy()
 		restbits = None
@@ -316,7 +325,7 @@ def compress(quantbits, nz, bitswap, gpu):
 		datapoints.reverse()
 		iterator = tqdm(range(len(datapoints)), desc="Receiver", postfix=f"decoded {None}")
 		for xi in iterator:
-			(x, _) = datapoints[xi]
+			(x, _, _) = datapoints[xi]
 			x = x.to(device).view(xdim)
 
 			# prior
@@ -353,7 +362,7 @@ def compress(quantbits, nz, bitswap, gpu):
 					state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
 
 					zsymtop = sym
-
+				k=1
 				assert torch.all(x.long() == zsymtop), f"decoded datapoint does not match {xi + 1}"
 
 			else:

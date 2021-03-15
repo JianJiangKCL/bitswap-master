@@ -417,9 +417,9 @@ class Model(nn.Module):
 
                 # scale parameter of the conditional Logistic distribution
                 # set a minimal value for the scale parameter of the bottom generative model
-                #todo why /8
-
-                scale = ((2. / 511.) / 9.) + modules.softplus(self.gen_std)
+                #todo why /8; it doesn' really matter, just a minimum value
+                # scale = modules.softplus(self.gen_std)
+                scale = ((2. / 511.) / 8.) + modules.softplus(self.gen_std)
                 # scale = ((2. / 255.) / 8.) + modules.softplus(self.gen_std)
 
             # deeper latent layers
@@ -949,7 +949,7 @@ if __name__ == '__main__':
     # set data pre-processing transforms
     # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
     transform_ops = transforms.Compose([ToFloat()])
-    height = 4
+    height = 8
     xs = (1, height, height)
     if root_process:
         print("Load model")
@@ -987,7 +987,8 @@ if __name__ == '__main__':
 
     # get dataset for training and testing of the model
     if root_process:
-        codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+        # codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+        codes_path = 'codes_img64_viacifar.npz'
         codes_ds = CodesNpzDataset(codes_path, transform=transform_ops)
         # train_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
         # test_set = datasets.MNIST(root="data/mnist", train=False, transform=transform_ops, download=True)
