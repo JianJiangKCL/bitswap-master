@@ -412,13 +412,13 @@ class Model(nn.Module):
                 h = self.gen_res0(h)
 
                 # mu parameter of the conditional Logistic distribution
-                # 8x8 bot
+
                 mu = self.gen_mu(h)
 
                 # scale parameter of the conditional Logistic distribution
                 # set a minimal value for the scale parameter of the bottom generative model
-                #todo
-                # self.gen_std is 4x4
+                #todo why /8
+
                 scale = ((2. / 511.) / 9.) + modules.softplus(self.gen_std)
                 # scale = ((2. / 255.) / 8.) + modules.softplus(self.gen_std)
 
@@ -784,7 +784,8 @@ def test(model, device, epoch, ema, data_loader, tag, root_process):
         with torch.no_grad():
             # evaluate the data under the model and calculate ELBO components
             logrecon, logdec, logenc, _ = model.loss(data)
-
+            # logenc is q(z|x)
+            # logdec is p(x|z)
             # construct the ELBO
             elbo = -logrecon + torch.sum(-logdec + logenc)
 
@@ -851,13 +852,7 @@ def lr_step(step, curr_lr, decay=0.99995, min_lr=5e-4):
     return curr_lr
 class CodesToTensor:
     def __call__(self, codes):
-        """
-        Args:
-            pic (PIL Image or numpy.ndarray): Image to be converted to tensor.
 
-        Returns:
-            Tensor: Converted image.
-        """
         return codes/511.0
 
     def __repr__(self):

@@ -955,8 +955,8 @@ if __name__ == '__main__':
 
     # get dataset for training and testing of the model
     if root_process:
-        train_set = datasets.CIFAR10(root="data/cifar", train=True, transform=transform_ops, download=True)
-        test_set = datasets.CIFAR10(root="data/cifar", train=False, transform=transform_ops, download=True)
+        train_set = datasets.CIFAR10(root="D:\Dataset\cifar100", train=True, transform=transform_ops, download=True)
+        test_set = datasets.CIFAR10(root="D:\Dataset\cifar100", train=False, transform=transform_ops, download=True)
 
     # if distributed over multiple GPU's, set-up barrier a barrier ensuring that all the processes have loaded the data
     if distributed:
@@ -964,8 +964,8 @@ if __name__ == '__main__':
 
     # get dataset for training and testing of the model
     if not root_process:
-        train_set = datasets.CIFAR10(root="data/cifar", train=True, transform=transform_ops, download=True)
-        test_set = datasets.CIFAR10(root="data/cifar", train=False, transform=transform_ops, download=True)
+        train_set = datasets.CIFAR10(root="D:\Dataset\cifar100", train=True, transform=transform_ops, download=True)
+        test_set = datasets.CIFAR10(root="D:\Dataset\cifar100", train=False, transform=transform_ops, download=True)
 
     # setup data sampler
     if distributed:

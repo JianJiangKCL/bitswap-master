@@ -34,7 +34,7 @@ def logistic_logp(mu, scale, x):
 def discretized_logistic_logp(mu, scale, x):
     # [0,255] -> [-1.1] (this means bin sizes of 2./255.)
     # x_rescaled = (x - 127.5) / 127.5
-    # 8x8
+    # [0,511] -> [-1.1] (this means bin sizes of 2./511.)
     x_rescaled = (x - 255.5) / 255.5
     invscale = 1. / scale
     # mu 8x8
@@ -84,6 +84,7 @@ def logistic_icdf(p, mu, scale):
 # in which every bin has equal mass under some given Logistic(mu, scale) distribution.
 # note: the first (-inf) and last (inf) endpoint are not created here, but rather
 # accounted for in the compression/decompression loop
+# my codes didn't use it
 class Bins:
     def __init__(self, mu, scale, precision):
         # number of bits used
