@@ -876,6 +876,8 @@ if __name__ == '__main__':
     parser.add_argument('--dist', default=0, type=int, help="distribute (1) over different gpu's and use Horovod to do so, or not (0)")
     parser.add_argument('--lr', default=2e-3, type=float, help="learning rate gradient descent")
     parser.add_argument('--schedule', default=1, type=float, help="learning rate schedule: yes (1) or no (0)")
+    parser.add_argument('--is_finetune', default=0, type=int)
+    parser.add_argument('--vae_path', default=None, type=str)
     parser.add_argument('--decay', default=0.9995, type=float, help="decay of the learning rate when using learning rate schedule")
 
     args = parser.parse_args()
@@ -965,7 +967,20 @@ if __name__ == '__main__':
                   dropout_p=dropout,
                   tag=tag,
                   root_process=root_process).to(device)
-
+    if args.is_finetune != 0:
+        print('--------loading previous weight')
+        if args.vae_path is None:
+            model.load_state_dict(
+                torch.load(f'params/code/nz{nz}',
+                           map_location=lambda storage, location: storage
+                           )
+            )
+        else:
+            print('vae _path', args.vae_path)
+            model.load_state_dict(
+                torch.load(args.vae_path
+                           )
+            )
     # set up Adam optimizer
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
@@ -1033,8 +1048,9 @@ if __name__ == '__main__':
         hvd.broadcast_optimizer_state(optimizer, root_rank=0)
 
     print("Data Dependent Initialization") if root_process else print("Data Dependent Initialization with ya!")
+    if args.is_finetune == 0:
     # data-dependent initialization
-    warmup(model, device, train_loader, 25, root_process)
+        warmup(model, device, train_loader, 25, root_process)
 
     # if distributed over multiple GPU's, set-up a barrier ensuring that all the processes have initialized the models
     if distributed:
