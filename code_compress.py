@@ -72,16 +72,17 @@ def check_states(states):
 	test = np.array(states, dtype=np.uint32)
 	states = test.tolist()
 	return states
-def compress(quantbits, nz, bitswap, gpu):
+def compress(quantbits, nz, bitswap, gpu, xs):
 	# model and compression params
 	# zdim = 1 * 16 * 16
 	# the size of latent z; is X_h/2
-	height = 4
-	zdim = int(args.zchannels * height/2 * height/2)
+	height, width =xs [1], xs[2]
+
+	zdim = int(args.zchannels * height/2 * width/2)
 	zrange = torch.arange(zdim)
 	#my the size of image
 	# xdim = 32 ** 2 * 1
-	xdim = height**2 * 1
+	xdim = height* width * 1
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
 	# his demo also use float64 for type
@@ -95,7 +96,7 @@ def compress(quantbits, nz, bitswap, gpu):
 	elif nz == 4:
 		reswidth = 64
 	elif nz == 2:
-		reswidth = 64
+		reswidth = 10
 	else:
 		reswidth = 64
 	assert nz > 0
@@ -112,25 +113,25 @@ def compress(quantbits, nz, bitswap, gpu):
 
 	# compression experiment params
 	experiments = 1
-	ndatapoints = 10
+	ndatapoints = 100
 	print('ndatapoint', ndatapoints)
 	#todo decomperss to False
 	decompress = True
 
 	# <=== MODEL ===>
-	model = Model(xs = (1, height, height), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=3, resdepth=args.blocks, reswidth=reswidth).to(device)
+	model = Model(xs = (1, height, width), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=3, resdepth=args.blocks, reswidth=reswidth).to(device)
+	model.load_state_dict(
+		torch.load(f'params/code/last_try',
+				   map_location=lambda storage, location: storage
+				   )
+	)
+	#todo
 	# model.load_state_dict(
 	# 	torch.load(f'params/code/nz{nz}',
-	# 			   map_location=lambda storage, location: storage
-	# 			   )
+	# 	           map_location=lambda storage, location: storage
+	# 	           )
 	# )
-	#todo
-	model.load_state_dict(
-		torch.load(f'params/code/nz{nz}',
-		           map_location=lambda storage, location: storage
-		           )
-	)
-	model.eval()
+	# model.eval()
 
 	print("Discretizing")
 	# get discretization bins for latent variables
@@ -202,7 +203,13 @@ def compress(quantbits, nz, bitswap, gpu):
 		# <===== SENDER =====>
 		iterator = tqdm(range(len(datapoints)), desc="Sender")
 		for xi in iterator:
-			(x, _, _) = datapoints[xi]
+			(top, bot, _) = datapoints[xi]
+
+			top = top.view(1, -1)
+			bot = bot.view(1, -1)
+
+			x = torch.cat([top, bot], dim=1)
+			x = x.reshape(1, 1, height, width)
 			x = x.to(device).view(xdim)
 
 			# calculate ELBO
@@ -325,7 +332,14 @@ def compress(quantbits, nz, bitswap, gpu):
 		datapoints.reverse()
 		iterator = tqdm(range(len(datapoints)), desc="Receiver", postfix=f"decoded {None}")
 		for xi in iterator:
-			(x, _, _) = datapoints[xi]
+			(top, bot, _) = datapoints[xi]
+			(top, bot, _) = datapoints[xi]
+
+			top = top.view(1, -1)
+			bot = bot.view(1, -1)
+
+			x = torch.cat([top, bot], dim=1)
+			x = x.reshape(1, 1, height, width)
 			x = x.to(device).view(xdim)
 
 			# prior
@@ -430,8 +444,8 @@ if __name__ == '__main__':
 	nz = args.nz
 	quantbits = args.quantbits
 	bitswap = args.bitswap
-
+	xs = [1, 8, 10]
 	for nz in [nz]:
 		for bits in [quantbits]:
 			for bitswap in [bitswap]:
-				compress(bits, nz, bitswap, gpu)
+				compress(bits, nz, bitswap, gpu, xs)

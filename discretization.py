@@ -82,7 +82,14 @@ def discretize(nz, quantbits, type, device, model, dataset):
                 # obtain samples from the inference model (using the dataset)
                 iterator = tqdm(range(batches), desc=f"sampling z{nz - zi} from inf")
                 for bi in iterator:
-                    datapoint = datapoints[bi] if dataset == "imagenet" else datapoints[bi][0]
+                    #todo change it back
+                    # datapoint = datapoints[bi] if dataset == "imagenet" else datapoints[bi][0]
+                    top, bot = datapoints[bi][0], datapoints[bi][1]
+                    B= top.size(0)
+                    top = top.view(B, -1)
+                    bot = bot.view(B, -1)
+                    datapoint = torch.cat([top, bot], dim=1)
+                    datapoint =  datapoint.reshape(B, 1, 8, 10)
                     given = (datapoint if nz - zi - 1 == 0 else torch.from_numpy(inf_samples[nz - zi - 2][bi * bs: bi * bs + bs])).to(device).float()
                     mu, scale = model.infer(nz - zi - 1)(given=given)
                     inf_samples[nz - zi - 1][bi * bs: bi * bs + bs] = transform(logistic_eps(mu.shape, device=device, bound=1e-30), mu, scale).cpu().numpy()
