@@ -90,7 +90,6 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	device = f"cuda:{gpu}" # gpu
 
 	# set up the different channel dimension for different latent depths
-	reswidth = args.width
 	if nz == 8:
 		# reswidth = 61
 		reswidth = 64
@@ -126,7 +125,18 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 				   map_location=lambda storage, location: storage
 				   )
 	)
-
+	#todo
+	# model.load_state_dict(
+	# 	torch.load(f'params/code/nz{nz}',
+	# 			   map_location=lambda storage, location: storage
+	# 			   )
+	# )
+	#todo
+	model.load_state_dict(
+		torch.load(args.vae_path,
+		           map_location=lambda storage, location: storage
+		           )
+	)
 	model.eval()
 
 	print("Discretizing")
@@ -150,12 +160,9 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 
 	# transform_ops = transforms.Compose([ToFloat()])
 	transform_ops = None
-	if args.dataset == 'img64':
-		codes_path = 'codes_img64_viacifar.npz'
-	elif args.dataset == 'cifar':
-		codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 
 
+	codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
 	print('len dataset', len(test_set))
 	# sample (experiments, ndatapoints) from test set with replacement
@@ -193,7 +200,8 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 		# default it generates int64 data, but it set it to np.uint32
 		# but int changed the state back to int64
 		# clear no value overflow
-		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=10000, dtype=np.uint32))) # fill state list with 'random' bits
+		excess_state_len = 10000
+		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=excess_state_len, dtype=np.uint32))) # fill state list with 'random' bits
 
 		#todo  value overflow, what's so used for
 		state[-1] = state[-1] << 32
@@ -204,11 +212,7 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 		# <===== SENDER =====>
 		iterator = tqdm(range(len(datapoints)), desc="Sender")
 		for xi in iterator:
-			(top, bot, _) = datapoints[xi]
-			if args.code_level == 'top':
-				x = top
-			elif args.code_level == 'bot':
-				x = bot
+			(x, _, _) = datapoints[xi]
 			x = x.to(device).view(xdim)
 
 			# calculate ELBO
@@ -230,13 +234,14 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
 
 					# decode z
+					# pop from ANS
 					state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
 
 					# save excess bits for calculations
 					if xi == zi == 0:
 						restbits = state.copy()
 						assert len(restbits) > 1, "too few initial bits" # otherwise initial state consists of too few bits
-
+					excess_state_len = len(state) if len(state) < excess_state_len else excess_state_len
 					# generative model
 					# zrange = zrange.to(torch.long)
 					z = zcentres[zi, zrange, zsymtop]
@@ -250,6 +255,7 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 					state = ANS(pmfs, bits=ansbits, quantbits=(quantbits if zi > 0 else 9)).encode(state,
 					                                                                               zsym if zi > 0 else x.long())
 					zsym = zsymtop
+
 
 			# prior
 			cdfs = logistic_cdf(zendpoints[-1].t(), torch.zeros(1, device=device, dtype=type), torch.ones(1, device=device, dtype=type)).t()
@@ -272,15 +278,15 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 			iterator.set_postfix_str(s=f"N:{nets[ei,:xi+1].mean():.2f}±{nets[ei,:xi+1].std():.2f}, D:{nets[ei,:xi+1].mean()-elbos[ei,:xi+1].mean():.4f}, C: {cma[ei,:xi+1].mean():.2f}, T: {totalbits:.0f}", refresh=False)
 
 		# write state to file
-
-		os.makedirs(f"bitstreams/code/nz{nz}_{args.code_level}_{args.dataset}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
-		with open(f"bitstreams/code/nz{nz}_{args.code_level}_{args.dataset}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "wb") as fp:
+		del state[0:excess_state_len - 1]
+		os.makedirs(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
+		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "wb") as fp:
 			# #state = check_states(state)
 			pickle.dump(state, fp)
 
 		state = None
 		# open state file
-		with open(f"bitstreams/code/nz{nz}_{args.code_level}_{args.dataset}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "rb") as fp:
+		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "rb") as fp:
 			state = pickle.load(fp)
 
 		if not decompress:
@@ -290,11 +296,7 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 		datapoints.reverse()
 		iterator = tqdm(range(len(datapoints)), desc="Receiver", postfix=f"decoded {None}")
 		for xi in iterator:
-			(top, bot, _) = datapoints[xi]
-			if args.code_level == 'top':
-				x = top
-			elif args.code_level == 'bot':
-				x = bot
+			(x, _, _) = datapoints[xi]
 			x = x.to(device).view(xdim)
 
 			# prior
@@ -377,11 +379,11 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	print(f"N:{nets.mean():.4f}±{nets.std():.2f}, E:{elbos.mean():.4f}±{elbos.std():.2f}, D:{nets.mean() - elbos.mean():.6f}")
 
 	# save experiments
-	os.makedirs(f"plots/code{nz}_{args.code_level}_{args.dataset}", exist_ok=True)
-	np.save(f"plots/code{nz}_{args.code_level}_{args.dataset}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_nets",nets)
-	np.save(f"plots/code{nz}_{args.code_level}_{args.dataset}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_elbos", elbos)
-	np.save(f"plots/code{nz}_{args.code_level}_{args.dataset}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_cmas",cma)
-	np.save(f"plots/code{nz}_{args.code_level}_{args.dataset}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_total", total)
+	os.makedirs(f"plots/code{nz}", exist_ok=True)
+	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_nets",nets)
+	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_elbos", elbos)
+	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_cmas",cma)
+	np.save(f"plots/code{nz}/{'bitswap' if bitswap else 'bbans'}_{quantbits}bits_total", total)
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
@@ -394,8 +396,6 @@ if __name__ == '__main__':
 	parser.add_argument('--vae_path', default=None, type=str)
 	parser.add_argument('--ndata', default=100, type=int)
 	parser.add_argument('--kernel', default=3, type=int)
-	parser.add_argument('--dataset', default=None, type=str)
-	parser.add_argument('--code_level', default=None, type=str)
 	args = parser.parse_args()
 	print(args)
 
@@ -403,17 +403,6 @@ if __name__ == '__main__':
 	nz = args.nz
 	quantbits = args.quantbits
 	bitswap = args.bitswap
-
-	if args.code_level == 'top':
-		factor = 1
-	elif args.code_level == 'bot':
-		factor = 2
-	if args.dataset == 'img64':
-		base = 8
-	elif args.dataset == 'cifar':
-		base = 4
-	height = base * factor
-
 	xs = [1, 4, 4]
 	for nz in [nz]:
 		for bits in [quantbits]:
