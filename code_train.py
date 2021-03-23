@@ -32,7 +32,7 @@ class Model(nn.Module):
         # latent height/width is always 16,
         # the number of channels depends on the dataset
         # zdim has CxH/2 x H/2
-        self.zdim = (self.zchannels, int(xs[1]/2), int(xs[2]/2))
+        self.zdim = (self.zchannels, int(xs[1]/2), int(xs[1]/2))
         self.resdepth = resdepth
         self.reswidth = reswidth
         self.kernel_size = kernel_size
@@ -577,18 +577,17 @@ class Model(nn.Module):
         # self.logger.add_image('x_reconstruct', x_grid, epoch)
 
 
-def warmup(model, device, data_loader, warmup_batches, root_process, xs):
+def warmup(model, device, data_loader, warmup_batches, root_process, args):
     # convert model to evaluation mode (no Dropout etc.)
     model.eval()
-    h, w = xs[1], xs[2]
+
     # prepare initialization batch
-    for batch_idx, (top, bot, _) in enumerate(data_loader):
+    for batch_idx, ( top, bot, _) in enumerate(data_loader):
+        if args.code_level == 'top':
+            image = top
+        elif args.code_level == 'bot':
+            image = bot
         # stack image with to current stack
-        B = top.size(0)
-        top = top.view(B, -1)
-        bot = bot.view(B, -1)
-        image = torch.cat([top, bot], dim=1)
-        image = image.reshape(B,1, h, w)
         warmup_images = torch.cat((warmup_images, image), dim=0) \
             if batch_idx != 0 else image
 
@@ -628,7 +627,7 @@ def warmup(model, device, data_loader, warmup_batches, root_process, xs):
             model.logger.add_scalar(f'z{i}/KL/train', kl[i - 1], 0)
 
 
-def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_process, xs, schedule=True, decay=0.99995):
+def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_process,args, schedule=True, decay=0.99995):
     # convert model to train mode (activate Dropout etc.)
     model.train()
 
@@ -652,10 +651,13 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
 
     # allocate memory for data
     data = torch.zeros((data_loader.batch_size,) + model.xs, device=device)
-    h, w = xs[1], xs[2]
 
     # enumerate over the batches
-    for batch_idx, (top, bot,_) in enumerate(data_loader):
+    for batch_idx, ( top, bot,_) in enumerate(data_loader):
+        if args.code_level == 'top':
+            batch = top
+        elif args.code_level == 'bot':
+            batch = bot
         # keep track of the global step
         global_step = (epoch - 1) * len(data_loader) + (batch_idx + 1)
 
@@ -668,13 +670,9 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
 
         # empty all the gradients stored
         optimizer.zero_grad()
-        B = top.size(0)
-        top = top.view(B, -1)
-        bot = bot.view(B, -1)
-        image = torch.cat([top, bot], dim=1)
-        image = image.reshape(B,1, h, w)
-        # copy the mini-image in the pre-allocated data-variable
-        data.copy_(image)
+
+        # copy the mini-batch in the pre-allocated data-variable
+        data.copy_(batch)
 
         # evaluate the data under the model and calculate ELBO components
         logrecon, logdec, logenc, zsamples = model.loss(data)
@@ -757,7 +755,7 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
         print(f'====> Epoch: {epoch} Average loss: {elbo:.4f}')
 
 
-def test(model, device, epoch, ema, data_loader, tag, root_process, xs):
+def test(model, device, epoch, ema, data_loader, tag, root_process, args):
     # convert model to evaluation mode (no Dropout etc.)
     model.eval()
 
@@ -781,20 +779,19 @@ def test(model, device, epoch, ema, data_loader, tag, root_process, xs):
 
     # allocate memory for the input data
     data = torch.zeros((data_loader.batch_size,) + model.xs, device=device)
-    h, w = xs[1], xs[2]
+
     # enumerate over the batches
-    for batch_idx, (top, bot, _) in enumerate(data_loader):
+    for batch_idx, ( top, bot, _) in enumerate(data_loader):
+        if args.code_level == 'top':
+            batch = top
+        elif args.code_level == 'bot':
+            batch = bot
         # save batch for reconstruction
         if batch_idx == recon_batch_idx:
             recon_dataset = data
 
-        B = top.size(0)
-        top = top.view(B, -1)
-        bot = bot.view(B, -1)
-        image = torch.cat([top, bot], dim=1)
-        image = image.reshape(B,1, h, w)
         # copy the mini-batch in the pre-allocated data-variable
-        data.copy_(image)
+        data.copy_(batch)
 
         with torch.no_grad():
             # evaluate the data under the model and calculate ELBO components
@@ -834,6 +831,8 @@ def test(model, device, epoch, ema, data_loader, tag, root_process, xs):
         print(f'\nEpoch: {epoch}\tTest loss: {elbo:.6f}')
         model.logger.add_scalar('elbo/test', elbo, epoch)
 
+        # todo this test function should be deleted, basically, use all data to train; and save every 25 epoch
+
         # log to Tensorboard
         model.logger.add_scalar('x/reconstruction/test', entrecon, epoch)
         for i in range(1, logdec.shape[0] + 1):
@@ -846,9 +845,9 @@ def test(model, device, epoch, ema, data_loader, tag, root_process, xs):
             model.logger.add_scalar('elbo/besttest', elbo, epoch)
             if not os.path.exists(f'params/code/'):
                 os.makedirs(f'params/code/')
-            torch.save(model.state_dict(), f'params/code/{tag}')
+            torch.save(model.state_dict(), f'params/code/{tag}_{args.code_level}_{args.dataset}')
             if epoch % 25 == 0:
-                torch.save(model.state_dict(), f'params/code/epoch{epoch}_{tag}')
+                torch.save(model.state_dict(), f'params/code/epoch{epoch}_{tag}_{args.code_level}_{args.dataset}')
             print("saved params\n")
             model.best_elbo = elbo
 
@@ -886,7 +885,6 @@ if __name__ == '__main__':
     parser.add_argument('--blocks', default=4, type=int, help="number of ResNet blocks")
     parser.add_argument('--width', default=64, type=int, help="number of channels in the convolutions in the ResNet blocks")
     parser.add_argument('--dropout', default=0.2, type=float, help="dropout rate of the hidden units")
-    # todo original is 3
     parser.add_argument('--kernel', default=3, type=int, help="size of the convolutional filter (kernel) in the ResNet blocks")
     parser.add_argument('--batch', default=128, type=int, help="size of the mini-batch for gradient descent")
     parser.add_argument('--dist', default=0, type=int, help="distribute (1) over different gpu's and use Horovod to do so, or not (0)")
@@ -894,6 +892,8 @@ if __name__ == '__main__':
     parser.add_argument('--schedule', default=1, type=float, help="learning rate schedule: yes (1) or no (0)")
     parser.add_argument('--is_finetune', default=0, type=int)
     parser.add_argument('--vae_path', default=None, type=str)
+    parser.add_argument('--dataset', default=None, type=str)
+    parser.add_argument('--code_level', default=None, type=str)
     parser.add_argument('--decay', default=0.9995, type=float, help="decay of the learning rate when using learning rate schedule")
 
     args = parser.parse_args()
@@ -967,9 +967,16 @@ if __name__ == '__main__':
     # set data pre-processing transforms
     # transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
     transform_ops = transforms.Compose([ToFloat()])
-    height = 8
-    width = 10
-    xs = (1, height, width)
+    if args.code_level == 'top':
+        factor = 1
+    elif args.code_level == 'bot':
+        factor = 2
+    if args.dataset =='img64':
+        base = 8
+    elif args.dataset == 'cifar':
+        base = 4
+    height = base * factor
+    xs = (1, height, height)
     if root_process:
         print("Load model")
 
@@ -988,7 +995,7 @@ if __name__ == '__main__':
         print('--------loading previous weight')
         if args.vae_path is None:
             model.load_state_dict(
-                torch.load(f'params/code/nz{nz}',
+                torch.load(f'params/code/nz{nz}_{args.code_level}_{args.dataset}',
                            map_location=lambda storage, location: storage
                            )
             )
@@ -1018,20 +1025,28 @@ if __name__ == '__main__':
         print("Load data")
 
     # get dataset for training and testing of the model
+    if args.dataset == 'img64':
+        codes_path = 'codes_img64_viacifar.npz'
+    elif args.dataset == 'cifar':
+        codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 
-    codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
-    # codes_path = 'codes_img64_viacifar.npz'
-    codes_ds = CodesNpzDataset(codes_path, transform=transform_ops)
-    train_set, val_set = torch.utils.data.random_split(
-        codes_ds, [len(codes_ds) - 1000, 1000])
+    if root_process:
+        # codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+        # codes_path = 'codes_img64_viacifar.npz'
+        codes_ds = CodesNpzDataset(codes_path, transform=transform_ops)
+        # train_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
+        # test_set = datasets.MNIST(root="data/mnist", train=False, transform=transform_ops, download=True)
+
     # if distributed over multiple GPU's, set-up barrier a barrier ensuring that all the processes have loaded the data
     if distributed:
         hvd.allreduce_(torch.Tensor(0), name='barrier')
 
     # get dataset for training and testing of the model
     if not root_process:
-        codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+        # codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
         codes_ds = CodesNpzDataset(codes_path, transform=transform_ops)
+        # train_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
+        # test_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
 
     # setup data sampler
     # if distributed:
@@ -1045,7 +1060,8 @@ if __name__ == '__main__':
     num_workers = 0
 
     # len(codes_ds)
-
+    train_set, val_set = torch.utils.data.random_split(
+        codes_ds, [len(codes_ds)-1000, 1000])
 
     train_loader = torch.utils.data.DataLoader(
         dataset=train_set, sampler=None,
@@ -1063,7 +1079,7 @@ if __name__ == '__main__':
     print("Data Dependent Initialization") if root_process else print("Data Dependent Initialization with ya!")
     if args.is_finetune == 0:
     # data-dependent initialization
-        warmup(model, device, train_loader, 25, root_process, xs)
+        warmup(model, device, train_loader, 25, root_process, args)
 
     # if distributed over multiple GPU's, set-up a barrier ensuring that all the processes have initialized the models
     if distributed:
@@ -1085,11 +1101,11 @@ if __name__ == '__main__':
                 ema.register_default(name, param.data)
 
     # initial test loss
-    test(model, device, 0, ema, test_loader, tag, root_process, xs)
+    test(model, device, 0, ema, test_loader, tag, root_process, args)
 
     # do the training loop and run over the test-set 1/5 epochs.
     print("Training") if root_process else print("Training with ya!")
     for epoch in range(1, epochs + 1):
-        train(model, device, epoch, train_loader, optimizer, ema, log_interval, root_process,  xs, schedule, decay)
+        train(model, device, epoch, train_loader, optimizer, ema, log_interval, root_process,args, schedule, decay)
         if epoch % 5 == 0:
-            test(model, device, epoch, ema, test_loader, tag, root_process, xs)
+            test(model, device, epoch, ema, test_loader, tag, root_process, args)
