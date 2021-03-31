@@ -83,6 +83,9 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	#my the size of image
 	# xdim = 32 ** 2 * 1
 	xdim = height* width * 1
+	print(height, width)
+	print('zarnage', zrange)
+	print('xdim', xdim)
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
 	# his demo also use float64 for type
@@ -125,18 +128,7 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 				   map_location=lambda storage, location: storage
 				   )
 	)
-	#todo
-	# model.load_state_dict(
-	# 	torch.load(f'params/code/nz{nz}',
-	# 			   map_location=lambda storage, location: storage
-	# 			   )
-	# )
-	#todo
-	model.load_state_dict(
-		torch.load(args.vae_path,
-		           map_location=lambda storage, location: storage
-		           )
-	)
+
 	model.eval()
 
 	print("Discretizing")
@@ -227,8 +219,10 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 				# inference and generative model
 				for zi in range(nz):
 					# inference model
+
 					input = zcentres[zi - 1, zrange, zsym] if zi > 0 else xcentres[xrange, x.long()]
 					mu, scale = model.infer(zi)(given=input)
+					# print('--------mu', mu.size())
 					cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
 					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
 					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
