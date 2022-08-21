@@ -316,20 +316,22 @@ class Model(pl.LightningModule):
             self.root_process = False
         if self.root_process:
             print('root  process')
-        self.elbo_metric = MeanMetric(dist_sync_on_step=True)
+        self.train_elbo_metric = MeanMetric(dist_sync_on_step=True)
+        self.val_elbo_metric = MeanMetric(dist_sync_on_step=True)
         # ema is not really necessary for training
-        # ema = modules.EMA(0.999)
-        # with torch.no_grad():
-        #     for name, param in self.named_parameters():
-        #         # only parameters optimized using gradient-descent are relevant here
-        #         if param.requires_grad:
-        #             # register (1) parameters
-        #             ema.register_ema(name, param.data)
-        #             # register (2) parameters
-        #             ema.register_default(name, param.data)
-        # # not really working
-        # self.ema = ema
-
+        ema = modules.EMA(0.999)
+        with torch.no_grad():
+            for name, param in self.named_parameters():
+                # only parameters optimized using gradient-descent are relevant here
+                if param.requires_grad:
+                    # register (1) parameters
+                    ema.register_ema(name, param.data)
+                    # register (2) parameters
+                    ema.register_default(name, param.data)
+        # not really working
+        self.ema = ema
+        self.flag_train_get_default_ema = True
+        self.flag_val_get_shadow_ema = True
 
     # function to set the model to compression mode
     def compress(self, compress=True):
@@ -594,29 +596,27 @@ class Model(pl.LightningModule):
         # log
         # self.logger.add_image('x_reconstruct', x_grid, epoch)
 
-
-
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.args.lr)
         return [optimizer]
-
 
     def training_step(self, batch, batch_idx):
         # after_zero_diff = self.backbone.get_summed_diff()
         # self.backbone.zero_buffer()
 
-        top, bot, y = batch
-
-        # get number of batches
-        nbatches = self.trainer.num_training_batches
-
+        # # get number of batches
+        # nbatches = self.trainer.num_training_batches
+        
         # switch to parameters not affected by exponential moving average decay
-        # for name, param in self.named_parameters():
-        #     if param.requires_grad:
-        #         param.data = self.ema.get_default(name).to(self.device)
+        # only for the entire epoch
+        if self.flag_train_get_default_ema:
+            for name, param in self.named_parameters():
+                if param.requires_grad:
+                    param.data = self.ema.get_default(name).to(self.device)
+            self.flag_train_get_default_ema = False
 
         # enumerate over the batches
-
+        top, bot, y = batch
         if self.args.code_level == 'top':
             batch = top
         elif self.args.code_level == 'bot':
@@ -657,13 +657,13 @@ class Model(pl.LightningModule):
         # take gradient step
         total_norm = nn.utils.clip_grad_norm_(self.parameters(), 1., norm_type=2)
         # # do ema update on parameters used for evaluation
-        # if self.root_process:
-        #     with torch.no_grad():
-        #         for name, param in self.named_parameters():
-        #             if param.requires_grad:
-        #                 self.ema(name, param.data)
+        if self.root_process:
+            with torch.no_grad():
+                for name, param in self.named_parameters():
+                    if param.requires_grad:
+                        self.ema(name, param.data)
 
-        self.elbo_metric.update(elbo.item())
+        self.train_elbo_metric.update(elbo.item())
 
         # print the average loss of the epoch to the console
 
@@ -677,17 +677,56 @@ class Model(pl.LightningModule):
     def training_epoch_end(self, outputs):
 
         # save training params, to be able to return to these values after evaluation
-        # with torch.no_grad():
-        #     for name, param in self.named_parameters():
-        #         if param.requires_grad:
-        #             self.ema.register_default(name, param.data)
-        avg_loss = self.elbo_metric.compute()
+        with torch.no_grad():
+            for name, param in self.named_parameters():
+                if param.requires_grad:
+                    self.ema.register_default(name, param.data)
+        avg_loss = self.train_elbo_metric.compute()
         # mean metric will not call reset automatically, so do it manually
-        self.elbo_metric.reset()
+        self.train_elbo_metric.reset()
         if self.root_process:
-            print('epoch: {}, avg_loss: {}'.format(self.current_epoch, avg_loss))
+            print('epoch: {}, train avg_loss: {}'.format(self.current_epoch, avg_loss))
+        # for the next start of the epoch, get the default parameters
+        self.flag_train_get_default_ema = True
 
+    def validation_step(self, batch, batch_idx):
+        # switch to EMA parameters for evaluation
+        if self.flag_val_get_shadow_ema:
+            for name, param in self.named_parameters():
+                if param.requires_grad:
+                    param.data = self.ema.get_ema(name)
+            self.flag_val_get_shadow_ema = False
 
+        top, bot, y = batch
+        if self.args.code_level == 'top':
+            batch = top
+        elif self.args.code_level == 'bot':
+            batch = bot
+
+        # evaluate the data under the model and calculate ELBO components
+        logrecon, logdec, logenc, zsamples = self.loss(batch)
+        elbo = -logrecon + torch.sum(-logdec + logenc)
+        elbo *= self.perdimsscale
+        logrecon *= self.perdimsscale
+        logdec *= self.perdimsscale
+        logenc *= self.perdimsscale
+
+        self.val_elbo_metric.update(elbo.item())
+        log_data = {
+            'val_loss': elbo.item(),
+        }
+        self.log_dict(log_data)
+        return elbo
+
+    def validation_epoch_end(self, outputs):
+        avg_loss = self.val_elbo_metric.compute()
+        # mean metric will not call reset automatically, so do it manually
+        self.val_elbo_metric.reset()
+        if self.root_process:
+            print('epoch: {}, val avg_loss: {}'.format(self.current_epoch, avg_loss))
+        # for the next start of the epoch, get the default parameters
+        self.flag_val_get_shadow_ema = True
+        
 
 def warmup(model, device, data_loader, warmup_batches, root_process, args):
     # convert model to evaluation mode (no Dropout etc.)
