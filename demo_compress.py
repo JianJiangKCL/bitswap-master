@@ -157,6 +157,8 @@ def compress(quantbits, nz, gpu, blocks):
         state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
 
     # remove excess streams
+    # those exccess streams' whose value excceeds 2*32
+    # after been removed, np can save state[] using np.uint32 in default rather than int64; Actually, may not.
     del state[0:excess_state_len - 1]
 
     return state

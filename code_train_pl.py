@@ -9,6 +9,7 @@ from datetime import datetime
 import numpy as np
 import argparse
 from args.setup import set_logger, set_trainer, parse_args
+from funcs.module_funcs import setup_scheduler, setup_optimizer
 # from tensorboardX import SummaryWriter
 from utils_funcs import set_seed, ToFloat
 import utils.torch.modules as modules
@@ -20,6 +21,8 @@ import wandb
 from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.data import DataLoader
 from datasets.DataModule import CodesModule
+
+
 class Model(pl.LightningModule):
     def __init__(self, args, xs=(3, 32, 32), nz=1, zchannels=16, nprocessing=1, kernel_size=3, resdepth=2,
                  reswidth=256, dropout_p=0., tag=''):
@@ -60,7 +63,6 @@ class Model(pl.LightningModule):
 
         # create loggers
         self.tag = tag
-
 
         # set-up current "best elbo"
         self.best_elbo = np.inf
@@ -355,11 +357,9 @@ class Model(pl.LightningModule):
                 # if compressing, the input is flattened, so we'll have to convert it back to a Tensor
                 if self.compressing:
                     h = h.view((-1,) + self.xs)
-                # also, when NOT compressing, the input is not scaled from [0,255] to [-1,1]
-                # [0,511] [-1,1]
+                # also, when NOT compressing, the input is not scaled from [0,511] [-1,1]
                 else:
                     h = (h - 255.5) / 255.5
-                    # h = (h - 127.5) / 127.5
 
                 # input convolution
                 h = self.infer_in(h)
@@ -440,7 +440,7 @@ class Model(pl.LightningModule):
                 # scale parameter of the conditional Logistic distribution
                 # set a minimal value for the scale parameter of the bottom generative model
                 # it doesn' really matter, just a minimum value
-                scale = ((2. / 511.) / 8.) + modules.softplus(self.gen_std)
+                scale = ((2. / 511.) / 9.) + modules.softplus(self.gen_std)
                 # scale = ((2. / 255.) / 8.) + modules.softplus(self.gen_std)
 
             # deeper latent layers
@@ -539,18 +539,11 @@ class Model(pl.LightningModule):
             z_prev = random.transform(eps, mu, scale)
             z = z_prev
 
-        # scale up from [-1,1] to [0,255]
-        # [-1,1] to [0, 511]
-        # x_cont = (z * 127.5) + 127.5
+        # scale up from  [-1,1] to [0, 511]
         x_cont = (z * 255.5) + 255.5
-
-        # ensure that [0,255]
         # ensure that  [0, 511]
-        # x = torch.clamp(x_cont, 0, 255)
         x = torch.clamp(x_cont, 0, 511)
-        # scale from [0,255] to [0,1] and convert to right shape
         # scale from [0,511] to [0,1] and convert to right shape
-        # x_sample = x.float() / 255.
         x_sample = x.float() / 511.
         x_sample = x_sample.view((num,) + self.xs)
 
@@ -576,9 +569,9 @@ class Model(pl.LightningModule):
         x_eps = random.logistic_eps(mu.shape, device=device)
         x_cont = random.transform(x_eps, mu, scale)
 
-        # scale up from [-1.1] to [0,255]
-        x_cont = (x_cont * 127.5) + 127.5
-        # scale up from [-1.1] to [0,511]
+        # scale up from [-1,1] to [0,255]
+        # x_cont = (x_cont * 127.5) + 127.5
+        # scale up from [-1,1] to [0,511]
         x_cont = (x_cont * 255.5) + 255.5
         # esnure that [0,255]
         # x_sample = torch.clamp(x_cont, 0, 255)
@@ -597,23 +590,11 @@ class Model(pl.LightningModule):
         # self.logger.add_image('x_reconstruct', x_grid, epoch)
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.args.lr)
-        return [optimizer]
+        opt = setup_optimizer(self.args, self)
+        scheduler, interval = setup_scheduler(self.args, opt)
+        return [opt], [{"scheduler": scheduler, "interval": interval}]
 
     def training_step(self, batch, batch_idx):
-        # after_zero_diff = self.backbone.get_summed_diff()
-        # self.backbone.zero_buffer()
-
-        # # get number of batches
-        # nbatches = self.trainer.num_training_batches
-        
-        # switch to parameters not affected by exponential moving average decay
-        # only for the entire epoch
-        if self.flag_train_get_default_ema:
-            for name, param in self.named_parameters():
-                if param.requires_grad:
-                    param.data = self.ema.get_default(name).to(self.device)
-            self.flag_train_get_default_ema = False
 
         # enumerate over the batches
         top, bot, y = batch
@@ -623,14 +604,6 @@ class Model(pl.LightningModule):
             batch = bot
         # keep track of the global step
         global_step = self.global_step
-
-        # update the learning rate according to schedule
-        opt = self.optimizers().optimizer
-        for param_group in opt.param_groups:
-            lr = param_group['lr']
-            lr = lr_step(global_step, lr, decay=self.args.decay)
-            param_group['lr'] = lr
-
 
         # evaluate the data under the model and calculate ELBO components
         logrecon, logdec, logenc, zsamples = self.loss(batch)
@@ -656,12 +629,6 @@ class Model(pl.LightningModule):
         loss = elbo
         # take gradient step
         total_norm = nn.utils.clip_grad_norm_(self.parameters(), 1., norm_type=2)
-        # # do ema update on parameters used for evaluation
-        if self.root_process:
-            with torch.no_grad():
-                for name, param in self.named_parameters():
-                    if param.requires_grad:
-                        self.ema(name, param.data)
 
         self.train_elbo_metric.update(elbo.item())
 
@@ -676,26 +643,13 @@ class Model(pl.LightningModule):
 
     def training_epoch_end(self, outputs):
 
-        # save training params, to be able to return to these values after evaluation
-        with torch.no_grad():
-            for name, param in self.named_parameters():
-                if param.requires_grad:
-                    self.ema.register_default(name, param.data)
         avg_loss = self.train_elbo_metric.compute()
         # mean metric will not call reset automatically, so do it manually
         self.train_elbo_metric.reset()
         if self.root_process:
             print('epoch: {}, train avg_loss: {}'.format(self.current_epoch, avg_loss))
-        # for the next start of the epoch, get the default parameters
-        self.flag_train_get_default_ema = True
 
     def validation_step(self, batch, batch_idx):
-        # switch to EMA parameters for evaluation
-        if self.flag_val_get_shadow_ema:
-            for name, param in self.named_parameters():
-                if param.requires_grad:
-                    param.data = self.ema.get_ema(name)
-            self.flag_val_get_shadow_ema = False
 
         top, bot, y = batch
         if self.args.code_level == 'top':
@@ -725,7 +679,7 @@ class Model(pl.LightningModule):
         if self.root_process:
             print('epoch: {}, val avg_loss: {}'.format(self.current_epoch, avg_loss))
         # for the next start of the epoch, get the default parameters
-        self.flag_val_get_shadow_ema = True
+        # self.flag_val_get_shadow_ema = True
         
 
 def warmup(model, device, data_loader, warmup_batches, root_process, args):
@@ -825,7 +779,7 @@ def main(args):
 
     if args.tag == 'full':
         args.tag = ''
-    save_path = f'params/code{args.tag}/nz{nz}_{args.code_level}_{args.dataset}_ckpt'
+    save_path = f'params/code{args.tag}/nz{nz}_{args.code_level}_{args.dataset}_pl'
 
     codes_path = args.dataset_path
 
@@ -864,8 +818,8 @@ def main(args):
         print("Data Dependent Initialization") if root_process else print("Data Dependent Initialization with ya!")
 
     root_dir = 'results'
-    # wandb_logger = set_logger(args, root_dir)
-    wandb_logger = None
+    wandb_logger = set_logger(args, root_dir)
+    # wandb_logger = None
     trainer = set_trainer(args, wandb_logger, save_path)
 
     trainer.fit(model, codes_module, ckpt_path=ckpt_path)

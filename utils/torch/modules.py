@@ -149,6 +149,10 @@ class EMA(Module):
 
     # apply exponential moving average on parameters stored in self.shadow
     def forward(self, name, x):
+
+        print('x device:', x.device)
+        print('self.shadow[name]:', self.shadow[name].device)
+        self.shadow[name] = self.shadow[name].to(x.device)
         assert name in self.shadow
         new_average = self.mu * x + (1.0 - self.mu) * self.shadow[name]
         self.shadow[name] = new_average.clone()

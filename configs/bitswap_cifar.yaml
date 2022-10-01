@@ -1,0 +1,11 @@
+name: bitswap
+
+# train
+lr : 0.002
+epochs : 100000
+num_workers : 8
+batch_size : 1024
+
+# data
+dataset : cifar
+use_amp : 0

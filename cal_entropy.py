@@ -8,7 +8,10 @@ def H(probs):
     tmp = probs * torch.log2(1 / probs)
     entropy = torch.sum(tmp)
     return entropy.item()
-
+def I(probs):
+    tmp = -torch.log2(probs)
+    info = torch.sum(tmp)
+    return info.item()
 def cal_entropy(x):
     # x = torch.from_numpy(x)
     # x = x.flatten()
@@ -17,25 +20,37 @@ def cal_entropy(x):
     probs = counts/ total
     entropy = H(probs)
     return entropy
-codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+def cal_info(x):
+    # x = torch.from_numpy(x)
+    # x = x.flatten()
+    total = len(x)
+    _, counts = torch.unique(x, return_counts=True)
+    probs = counts/ total
+    info = I(probs)
+    return info
+# codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
 # codes_path = 'codes_img64_viacifar.npz'
 # codes_path = 'img224_codes_viaCifar_deflate.npz'
-
+# codes_path = 'img224_all_codes_viaCifar_deflate.npz'
+codes_path = 'sub_down_img224_all_viaCifar.npz'
 codes_ds = CodesNpzDataset(codes_path)
 uni_label, counts = torch.unique(torch.from_numpy(codes_ds.targets), return_counts=True)
+print(f"num samples {len(codes_ds.targets)}")
+
 #####
 # top code
 ###
 
-top_code = torch.from_numpy(codes_ds.code_t)
+top_code = torch.from_numpy(codes_ds.code_t)#[0:100,:, :,:]
 top_code = top_code.flatten()
 top_entropy = cal_entropy(top_code)
+top_info = cal_info(top_code)
 # total_top = len(top_code)
 # _, counts_top = torch.unique(top_code, return_counts=True)
 # probs = counts_top/total_top
 # top_entropy = H(probs)
 print('top entrop', top_entropy)
-
+print('top info', top_info)
 #############
 # bottom entropy
 ####

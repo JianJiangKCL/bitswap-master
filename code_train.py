@@ -417,8 +417,7 @@ class Model(nn.Module):
 
                 # scale parameter of the conditional Logistic distribution
                 # set a minimal value for the scale parameter of the bottom generative model
-                #todo why /8; it doesn' really matter, just a minimum value
-                # scale = modules.softplus(self.gen_std)
+                # it doesn' really matter, just a minimum value
                 scale = ((2. / 511.) / 8.) + modules.softplus(self.gen_std)
                 # scale = ((2. / 255.) / 8.) + modules.softplus(self.gen_std)
 
@@ -720,9 +719,10 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
             logencs[batch_idx] += logenc
 
         # log and save parameters
+
         if root_process and batch_idx % log_interval == 0 and log_interval < nbatches:
             # print metrics to console
-            print(f'Train Epoch: {epoch} [{batch_idx}/{nbatches} ({100. * batch_idx / len(data_loader):.0f}%)]\tLoss: {elbo.item():.6f}\tGnorm: {total_norm:.2f}\tSteps/sec: {(time.time() - start_time) / (batch_idx + 1):.3f}')
+            print(f'Train Epoch: {epoch} [{batch_idx}/{nbatches} ({100. * batch_idx / len(data_loader):.0f}%)]\tLoss: {elbo.item():.6f}\tlr:{lr:.6f}\tGnorm: {total_norm:.2f}\tSteps/sec: {(time.time() - start_time) / (batch_idx + 1):.3f}')
 
 
             model.logger.add_scalar('step-sec', (time.time() - start_time) / (batch_idx + 1), global_step)
@@ -743,7 +743,7 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
                 model.logger.add_scalar(f'z{i}/decoder/train', entdec[i - 1], global_step)
                 model.logger.add_scalar(f'z{i}/KL/train', kl[i - 1], global_step)
 
-    # save training params, to be able to return to these values after evaluation
+    # save training params, to be able to return to these values after evaluation; after one
     with torch.no_grad():
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -752,10 +752,18 @@ def train(model, device, epoch, data_loader, optimizer, ema, log_interval, root_
     # print the average loss of the epoch to the console
     if root_process:
         elbo = torch.mean(elbos).detach().cpu().numpy()
+        if not os.path.exists(f'params/{data_tag}code/'):
+            os.makedirs(f'params/{data_tag}code/')
+        checkpoint = {
+            'model': model.state_dict(),
+            'epoch': epoch + 1,
+            'optimizer': optimizer.state_dict(),
+        }
+        torch.save(checkpoint, f'params/{data_tag}code/{tag}_{args.code_level}_{args.dataset}')
         print(f'====> Epoch: {epoch} Average loss: {elbo:.4f}')
 
 
-def test(model, device, epoch, ema, data_loader, tag, root_process, args):
+def test(model, device, epoch, ema, data_loader, tag, root_process, args, optimizer):
     # convert model to evaluation mode (no Dropout etc.)
     model.eval()
 
@@ -843,11 +851,16 @@ def test(model, device, epoch, ema, data_loader, tag, root_process, args):
         # if the current ELBO is better than the ELBO's before, save parameters
         if elbo < model.best_elbo and not np.isnan(elbo):
             model.logger.add_scalar('elbo/besttest', elbo, epoch)
-            if not os.path.exists(f'params/code/'):
-                os.makedirs(f'params/code/')
-            torch.save(model.state_dict(), f'params/code/{tag}_{args.code_level}_{args.dataset}')
+            if not os.path.exists(f'params/{data_tag}code/'):
+                os.makedirs(f'params/{data_tag}code/')
+            checkpoint = {
+                'model': model.state_dict(),
+                'epoch': epoch + 1,
+                'optimizer': optimizer.state_dict(),
+            }
+            torch.save(checkpoint, f'params/{data_tag}code/{tag}_{args.code_level}_{args.dataset}')
             if epoch % 25 == 0:
-                torch.save(model.state_dict(), f'params/code/epoch{epoch}_{tag}_{args.code_level}_{args.dataset}')
+                torch.save(checkpoint, f'params/{data_tag}code/epoch{epoch}_{tag}_{args.code_level}_{args.dataset}')
             print("saved params\n")
             model.best_elbo = elbo
 
@@ -855,6 +868,7 @@ def test(model, device, epoch, ema, data_loader, tag, root_process, args):
             model.reconstruct(recon_dataset, device, epoch)
         else:
             print("loss did not improve\n")
+
 
 # learning rate schedule
 def lr_step(step, curr_lr, decay=0.99995, min_lr=5e-4):
@@ -864,6 +878,8 @@ def lr_step(step, curr_lr, decay=0.99995, min_lr=5e-4):
         curr_lr *= decay
         return curr_lr
     return curr_lr
+
+
 class CodesToTensor:
     def __call__(self, codes):
 
@@ -876,7 +892,7 @@ if __name__ == '__main__':
     # hyperparameters, input from command line
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', default=99, type=int, help="seed for experiment reproducibility")
-    parser.add_argument('--nz', default=2, type=int, help="number of latent variables, greater or equal to 1")
+    parser.add_argument('--nz', default=2, type=int, help="number of latent variables (layers), greater or equal to 1")
     parser.add_argument('--zchannels', default=4, type=int, help="number of channels for the latent variables")
     parser.add_argument('--nprocessing', default=4, type=int, help='number of processing layers')
     parser.add_argument('--gpu', default=0, type=int, help="number of gpu's to distribute optimization over")
@@ -886,15 +902,17 @@ if __name__ == '__main__':
     parser.add_argument('--width', default=64, type=int, help="number of channels in the convolutions in the ResNet blocks")
     parser.add_argument('--dropout', default=0.2, type=float, help="dropout rate of the hidden units")
     parser.add_argument('--kernel', default=3, type=int, help="size of the convolutional filter (kernel) in the ResNet blocks")
-    parser.add_argument('--batch', default=128, type=int, help="size of the mini-batch for gradient descent")
+    parser.add_argument('--batch_size', default=128, type=int, help="size of the mini-batch for gradient descent")
     parser.add_argument('--dist', default=0, type=int, help="distribute (1) over different gpu's and use Horovod to do so, or not (0)")
     parser.add_argument('--lr', default=2e-3, type=float, help="learning rate gradient descent")
     parser.add_argument('--schedule', default=1, type=float, help="learning rate schedule: yes (1) or no (0)")
     parser.add_argument('--is_finetune', default=0, type=int)
     parser.add_argument('--vae_path', default=None, type=str)
     parser.add_argument('--dataset', default=None, type=str)
+    parser.add_argument('--dataset_path', default=None, type=str)
     parser.add_argument('--code_level', default=None, type=str)
     parser.add_argument('--decay', default=0.9995, type=float, help="decay of the learning rate when using learning rate schedule")
+    parser.add_argument('--data_tag', default='', type=str)
 
     args = parser.parse_args()
     print(args) # print all the hyperparameters
@@ -902,7 +920,7 @@ if __name__ == '__main__':
     # store hyperparameters in variables
     seed = args.seed
     epochs = args.epochs
-    batch_size = args.batch
+    batch_size = args.batch_size
     nz = args.nz
     zchannels = args.zchannels
     nprocessing = args.nprocessing
@@ -917,7 +935,7 @@ if __name__ == '__main__':
     schedule = True if args.schedule == 1 else False
     decay = args.decay
     assert nz > 0
-
+    data_tag = args.data_tag
     # setup seeds to maintain experiment reproducibility
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -927,10 +945,10 @@ if __name__ == '__main__':
     # Distributed: set up horovod over multiple gpu's
     if distributed:
         import horovod.torch as hvd
-
+        print('=============================')
         # initialize horovod
         hvd.init()
-
+        print(hvd.size())
         # pin gpu to "local rank" (see Horovod documentation)
         torch.cuda.set_device(hvd.local_rank())
         print(f"My local rank is {hvd.local_rank()}")
@@ -954,7 +972,7 @@ if __name__ == '__main__':
 
     # set number of workers and pin the memory if we distribute over multiple gpu's
     # (see Dataloader docs of PyTorch)
-    kwargs = {'num_workers': 8, 'pin_memory': True} if distributed else {}
+    kwargs = {'num_workers': 4, 'pin_memory': True} #if distributed else {}
 
     # create class that scales up the data to [0,255] if called
     class ToInt:
@@ -975,11 +993,14 @@ if __name__ == '__main__':
         base = 8
     elif args.dataset == 'cifar':
         base = 4
+    elif args.dataset == 'img224':
+        base = 28
+
     height = base * factor
     xs = (1, height, height)
     if root_process:
         print("Load model")
-
+    start_epoch = 1
     # build model from hyperparameters
     model = Model(xs=xs,
                   kernel_size=kernel,
@@ -991,22 +1012,23 @@ if __name__ == '__main__':
                   dropout_p=dropout,
                   tag=tag,
                   root_process=root_process).to(device)
+    # set up Adam optimizer
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     if args.is_finetune != 0:
         print('--------loading previous weight')
         if args.vae_path is None:
-            model.load_state_dict(
-                torch.load(f'params/code/nz{nz}_{args.code_level}_{args.dataset}',
+            checkpoint = torch.load(f'params/{data_tag}code/nz{nz}_{args.code_level}_{args.dataset}',
                            map_location=lambda storage, location: storage
                            )
-            )
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            start_epoch = checkpoint['epoch']
         else:
-            print('vae _path', args.vae_path)
-            model.load_state_dict(
-                torch.load(args.vae_path
-                           )
-            )
-    # set up Adam optimizer
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+            print('vae_path', args.vae_path)
+            checkpoint = torch.load(args.vae_path)
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            start_epoch = checkpoint['epoch']
 
     # if we distribute over multiple GPU's, set up Horovod's distributed optimizer wrapper around the optimizer
     if distributed:
@@ -1025,11 +1047,13 @@ if __name__ == '__main__':
         print("Load data")
 
     # get dataset for training and testing of the model
-    if args.dataset == 'img64':
-        codes_path = 'codes_img64_viacifar.npz'
-    elif args.dataset == 'cifar':
-        codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
-
+    # if args.dataset == 'img64':
+    #     codes_path = 'codes_img64_viacifar.npz'
+    # elif args.dataset == 'cifar':
+    #     codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+    # elif args.dataset == 'img224':
+    #     codes_path = 'sub_down_img224_all_viaCifar.npz'
+    codes_path = args.dataset_path
     if root_process:
         # codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
         # codes_path = 'codes_img64_viacifar.npz'
@@ -1045,30 +1069,30 @@ if __name__ == '__main__':
     if not root_process:
         # codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
         codes_ds = CodesNpzDataset(codes_path, transform=transform_ops)
+        print('----- dataset loaded')
         # train_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
         # test_set = datasets.MNIST(root="data/mnist", train=True, transform=transform_ops, download=True)
 
     # setup data sampler
-    # if distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(
-    #         train_set, num_replicas=hvd.size(), rank=hvd.rank())
-    #     test_sampler = torch.utils.data.distributed.DistributedSampler(
-    #         test_set, num_replicas=hvd.size(), rank=hvd.rank())
+    if distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            codes_ds, num_replicas=hvd.size(), rank=hvd.rank())
+        test_sampler = torch.utils.data.distributed.DistributedSampler(
+            codes_ds, num_replicas=hvd.size(), rank=hvd.rank())
 
     # setup mini-batch enumerator for both train-set and test-set
-    end_class = 100
-    num_workers = 0
 
     # len(codes_ds)
-    train_set, val_set = torch.utils.data.random_split(
-        codes_ds, [len(codes_ds)-1000, 1000])
-
+    # train_set, test_set = torch.utils.data.random_split(
+    #     codes_ds, [len(codes_ds)-1000, 1000])
+    train_set = codes_ds
+    test_set = codes_ds
     train_loader = torch.utils.data.DataLoader(
-        dataset=train_set, sampler=None,
+        dataset=train_set, sampler=train_sampler if distributed else None,
         batch_size=batch_size, shuffle=False if distributed else True, drop_last=True, **kwargs)
-    tmp = next(iter(train_loader))
+
     test_loader = torch.utils.data.DataLoader(
-        dataset=val_set, sampler= None,
+        dataset=test_set, sampler=test_sampler if distributed else None,
         batch_size=batch_size, shuffle=False if distributed else True, drop_last=True, **kwargs)
 
     # Distributed: broadcast parameters to all the processes
@@ -1076,11 +1100,11 @@ if __name__ == '__main__':
         hvd.broadcast_parameters(model.state_dict(), root_rank=0)
         hvd.broadcast_optimizer_state(optimizer, root_rank=0)
 
-    print("Data Dependent Initialization") if root_process else print("Data Dependent Initialization with ya!")
+
     if args.is_finetune == 0:
     # data-dependent initialization
         warmup(model, device, train_loader, 25, root_process, args)
-
+        print("Data Dependent Initialization") if root_process else print("Data Dependent Initialization with ya!")
     # if distributed over multiple GPU's, set-up a barrier ensuring that all the processes have initialized the models
     if distributed:
         hvd.allreduce_(torch.Tensor(0), name='barrier')
@@ -1101,11 +1125,12 @@ if __name__ == '__main__':
                 ema.register_default(name, param.data)
 
     # initial test loss
-    test(model, device, 0, ema, test_loader, tag, root_process, args)
 
+    test(model, device, 0, ema, test_loader, tag, root_process, args, optimizer)
+    print('--- initial test loss:')
     # do the training loop and run over the test-set 1/5 epochs.
     print("Training") if root_process else print("Training with ya!")
-    for epoch in range(1, epochs + 1):
-        train(model, device, epoch, train_loader, optimizer, ema, log_interval, root_process,args, schedule, decay)
-        if epoch % 5 == 0:
-            test(model, device, epoch, ema, test_loader, tag, root_process, args)
+    for epoch in range(start_epoch, epochs + 1):
+        train(model, device, epoch, train_loader, optimizer, ema, log_interval, root_process, args, schedule, decay)
+        # if epoch % 5 == 0:
+        #     test(model, device, epoch, ema, test_loader, tag, root_process, args, optimizer)

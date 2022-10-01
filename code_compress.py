@@ -11,7 +11,6 @@ from tqdm import tqdm
 import pickle
 from torch.utils.data import DataLoader, Subset
 class ANS:
-	#todo quantbits is highly likely to be cost of saving 0,255
 	def __init__(self, pmfs, bits=31, quantbits=8):
 		self.device = pmfs.device
 		self.bits = bits
@@ -72,11 +71,25 @@ def check_states(states):
 	test = np.array(states, dtype=np.uint32)
 	states = test.tolist()
 	return states
-def compress(quantbits, nz, bitswap, gpu, xs, args):
+def compress(quantbits, nz, bitswap, gpu, args):
 	# model and compression params
 	# zdim = 1 * 16 * 16
 	# the size of latent z; is X_h/2
-	height, width =xs [1], xs[2]
+	if args.code_level == 'top':
+		factor = 1
+	elif args.code_level == 'bot':
+		factor = 2
+	if args.dataset == 'img64':
+		base = 8
+	elif args.dataset == 'cifar':
+		base = 4
+		codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+	elif args.dataset == 'img224':
+		base = 28
+		codes_path = 'sub_down_img224_all_viaCifar.npz'
+	height = base * factor
+	xs = (1, height, height)
+	width = height
 
 	zdim = int(args.zchannels * height/2 * width/2)
 	zrange = torch.arange(zdim)
@@ -84,25 +97,14 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	# xdim = 32 ** 2 * 1
 	xdim = height* width * 1
 	print(height, width)
-	print('zarnage', zrange)
+	# print('zarnage', zrange)
 	print('xdim', xdim)
 	xrange = torch.arange(xdim)
 	ansbits = 31 # ANS precision
 	# his demo also use float64 for type
 	type = torch.float64 # datatype throughout compression
 	device = f"cuda:{gpu}" # gpu
-
-	# set up the different channel dimension for different latent depths
-	if nz == 8:
-		# reswidth = 61
-		reswidth = 64
-	elif nz == 4:
-		reswidth = 64
-	elif nz == 2:
-		reswidth = 64
-	else:
-		reswidth = 64
-	assert nz > 0
+	reswidth = 64
 
 	print(f"{'Bit-Swap' if bitswap else 'BB-ANS'} - CODE - {nz} latent layers - {quantbits} bits quantization")
 
@@ -114,58 +116,61 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	torch.backends.cudnn.deterministic = True
 	torch.backends.cudnn.benchmark = True
 
+
+
+	print("Load data..")
+	# <=== DATA ===>
+	# transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
+	from code_train import CodesToTensor
+	from dataset import CodesNpzDataset
+
+	# transform_ops = transforms.Compose([ToFloat()])
+	transform_ops = None
+
+	# codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
+	args.codes_path = codes_path
+	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
+	print('len dataset', len(test_set))
 	# compression experiment params
-	experiments = 1
-	ndatapoints = args.ndata
+	experiments = args.n_group
+	# experiments = 2
+	# ndatapoints = 10
+	ndatapoints = int(len(test_set)/experiments)
 	print('ndatapoint', ndatapoints)
-	#todo decomperss to False
-	decompress = True
+	# sample (experiments, ndatapoints) from test set with replacement
+	# in fact, below if-condition will always go "the first condition" as the right file path should end with .npy
+	# always overwrite the indices is better, o/w  this may load other setting's indices;
+	# if not os.path.exists("bitstreams/code/indices"):
+	# randindices = np.random.choice(len(test_set.targets), size=(experiments, ndatapoints), replace=False)
+	randindices = np.random.choice(20, size=(experiments, ndatapoints), replace=False)
+	if not os.path.exists(f'bitstreams/'):
+		os.makedirs(f'bitstreams/code')
+	# np.save("bitstreams/code/indices", randindices)
+	# else:
+	# 	randindices = np.load("bitstreams/code/indices")
+
+	# decomperss to True to validate
+	decompress = False
 
 	# <=== MODEL ===>
-	model = Model(xs = (1, height, width), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=args.kernel, resdepth=args.blocks, reswidth=reswidth).to(device)
-	model.load_state_dict(
-		torch.load(args.vae_path,
-				   map_location=lambda storage, location: storage
-				   )
-	)
-
+	model = Model(xs=(1, height, width), nz=nz, zchannels=args.zchannels, nprocessing=4, kernel_size=args.kernel, resdepth=args.blocks, reswidth=reswidth).to(device)
+	checkpoint = torch.load(args.vae_path,
+	                        map_location=lambda storage, location: storage
+	                        )
+	model.load_state_dict(checkpoint['model'])
+	print('epoch', checkpoint['epoch'])
 	model.eval()
 
 	print("Discretizing")
 	# get discretization bins for latent variables
-	zendpoints, zcentres = discretize(nz, quantbits, type, device, model, "code")
+	zendpoints, zcentres = discretize(nz, quantbits, type, device, model,args)
 
 	# get discretization bins for discretized logistic
 	xbins = ImageBins(type, device, xdim)
 	xendpoints = xbins.endpoints()
 	xcentres = xbins.centres()
 
-	print("Load data..")
-	# <=== DATA ===>
 
-	class ToFloat:
-		def __call__(self, code):
-			return code.to(torch.float32)
-	# transform_ops = transforms.Compose([transforms.Pad(2), transforms.ToTensor(), ToInt()])
-	from code_train import CodesToTensor
-	from dataset import  CodesNpzDataset
-
-	# transform_ops = transforms.Compose([ToFloat()])
-	transform_ops = None
-
-
-	codes_path = 'np_codes_uint16_via50VQVAEn512.npz'
-	test_set = CodesNpzDataset(codes_path, transform=transform_ops)
-	print('len dataset', len(test_set))
-	# sample (experiments, ndatapoints) from test set with replacement
-	# in fact, below if-condition will always go "the first condition" as the right file path should end with .npy
-	if not os.path.exists("bitstreams/code/indices"):
-		randindices = np.random.choice(len(test_set.targets), size=(experiments, ndatapoints), replace=False)
-		if not os.path.exists(f'bitstreams/'):
-			os.makedirs(f'bitstreams/code')
-		np.save("bitstreams/code/indices", randindices)
-	else:
-		randindices = np.load("bitstreams/code/indices")
 
 	print("Setting up metrics..")
 	# metrics for the results
@@ -175,200 +180,205 @@ def compress(quantbits, nz, bitswap, gpu, xs, args):
 	total = np.zeros((experiments, ndatapoints), dtype=np.float)
 
 	print("Compression..")
-	for ei in range(experiments):
-		print(f"Experiment {ei + 1}")
-		subset = Subset(test_set, randindices[ei])
-		test_loader = DataLoader(
-			dataset=subset,
-			batch_size=1, shuffle=False, drop_last=True)
-		datapoints = list(test_loader)
+	# for ei in range(experiments):
 
-		# < ===== COMPRESSION ===>
-		# initialize compression
-		model.compress()
-		#
-		# it means it starts with 10000 sta tes.
+	ei = args.slurm_id
+	print(f"Experiment {ei + 1}")
+	subset = Subset(test_set, randindices[ei])
+	test_loader = DataLoader(
+		dataset=subset,
+		batch_size=1, shuffle=False, drop_last=True)
+	datapoints = list(test_loader)
 
-		# default it generates int64 data, but it set it to np.uint32
-		# but int changed the state back to int64
-		# clear no value overflow
-		excess_state_len = 10000
-		state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=excess_state_len, dtype=np.uint32))) # fill state list with 'random' bits
+	# < ===== COMPRESSION ===>
+	# initialize compression
+	model.compress()
+	#
+	# it means it starts with 10000 sta tes.
 
-		#todo  value overflow, what's so used for
-		state[-1] = state[-1] << 32
-		#state = check_states(state)
-		initialstate = state.copy()
-		restbits = None
+	# default it generates int64 data, but it set it to np.uint32
+	# but int changed the state back to int64
+	# clear no value overflow
+	excess_state_len = 10000
+	state = list(map(int, np.random.randint(low=1 << 16, high=(1 << 32) - 1, size=excess_state_len, dtype=np.uint32))) # fill state list with 'random' bits
 
-		# <===== SENDER =====>
-		iterator = tqdm(range(len(datapoints)), desc="Sender")
-		for xi in iterator:
-			(x, _, _) = datapoints[xi]
-			x = x.to(device).view(xdim)
+	#todo  value overflow, what's so used for
+	state[-1] = state[-1] << 32
+	#state = check_states(state)
+	initialstate = state.copy()
+	restbits = None
 
-			# calculate ELBO
-			with torch.no_grad():
-				model.compress(False)
-				logrecon, logdec, logenc, _ = model.loss(x.view((-1,) + model.xs))
-				elbo = -logrecon + torch.sum(-logdec + logenc)
-				model.compress(True)
+	# <===== SENDER =====>
+	iterator = tqdm(range(len(datapoints)), desc="Sender", disable=args.disable_tqdm)
+	for xi in iterator:
+		if args.code_level == 'top':
+			x = datapoints[xi][0]
+		elif args.code_level == 'bot':
+			x = datapoints[xi][1]
+		# (x, _, _) = datapoints[xi]
+		x = x.to(device).view(xdim)
 
-			if bitswap:
-				# < ===== Bit-Swap ====>
-				# inference and generative model
-				for zi in range(nz):
-					# inference model
+		# calculate ELBO
+		with torch.no_grad():
+			model.compress(False)
+			logrecon, logdec, logenc, _ = model.loss(x.view((-1,) + model.xs))
+			elbo = -logrecon + torch.sum(-logdec + logenc)
+			model.compress(True)
 
-					input = zcentres[zi - 1, zrange, zsym] if zi > 0 else xcentres[xrange, x.long()]
-					mu, scale = model.infer(zi)(given=input)
-					# print('--------mu', mu.size())
-					cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+		if bitswap:
+			# < ===== Bit-Swap ====>
+			# inference and generative model
+			for zi in range(nz):
+				# inference model
 
-					# decode z
-					# pop from ANS
-					state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
+				input = zcentres[zi - 1, zrange, zsym] if zi > 0 else xcentres[xrange, x.long()]
+				mu, scale = model.infer(zi)(given=input)
+				# print('--------mu', mu.size())
+				cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
+				pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+				pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
 
-					# save excess bits for calculations
-					if xi == zi == 0:
-						restbits = state.copy()
-						assert len(restbits) > 1, "too few initial bits" # otherwise initial state consists of too few bits
-					excess_state_len = len(state) if len(state) < excess_state_len else excess_state_len
-					# generative model
-					# zrange = zrange.to(torch.long)
-					z = zcentres[zi, zrange, zsymtop]
-					mu, scale = model.generate(zi)(given=z)
-					cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t() # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+				# decode z
+				# pop from ANS
+				state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
 
-					# encode z or x
-					# state = ANS(pmfs, bits=ansbits, quantbits=(quantbits if zi > 0 else 8)).encode(state, zsym if zi > 0 else x.long())
-					state = ANS(pmfs, bits=ansbits, quantbits=(quantbits if zi > 0 else 9)).encode(state,
-					                                                                               zsym if zi > 0 else x.long())
-					zsym = zsymtop
+				# save excess bits for calculations
+				if xi == zi == 0:
+					restbits = state.copy()
+					assert len(restbits) > 1, "too few initial bits" # otherwise initial state consists of too few bits
+				excess_state_len = len(state) if len(state) < excess_state_len else excess_state_len
+				# generative model
+				# zrange = zrange.to(torch.long)
+				z = zcentres[zi, zrange, zsymtop]
+				mu, scale = model.generate(zi)(given=z)
+				cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t() # most expensive calculation?
+				pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+				pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+
+				# encode z or x
+				# state = ANS(pmfs, bits=ansbits, quantbits=(quantbits if zi > 0 else 8)).encode(state, zsym if zi > 0 else x.long())
+				state = ANS(pmfs, bits=ansbits, quantbits=(quantbits if zi > 0 else 9)).encode(state,
+				                                                                               zsym if zi > 0 else x.long())
+				zsym = zsymtop
 
 
-			# prior
-			cdfs = logistic_cdf(zendpoints[-1].t(), torch.zeros(1, device=device, dtype=type), torch.ones(1, device=device, dtype=type)).t()
-			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+		# prior
+		cdfs = logistic_cdf(zendpoints[-1].t(), torch.zeros(1, device=device, dtype=type), torch.ones(1, device=device, dtype=type)).t()
+		pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+		pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
 
-			# encode prior
-			state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
+		# encode prior
+		state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
 
-			# calculating bits
-			totaladdedbits = (len(state) - len(initialstate)) * 32
-			totalbits = (len(state) - (len(restbits) - 1)) * 32
+		# calculating bits
+		totaladdedbits = (len(state) - len(initialstate)) * 32
+		totalbits = (len(state) - (len(restbits) - 1)) * 32
 
-			# logging
-			nets[ei, xi] = (totaladdedbits / xdim) - nets[ei, :xi].sum()
-			elbos[ei, xi] = elbo.item() / xdim
-			cma[ei, xi] = totalbits / (xdim * (xi + 1))
-			total[ei, xi] = totalbits
+		# logging
+		nets[ei, xi] = (totaladdedbits / xdim) - nets[ei, :xi].sum()
+		elbos[ei, xi] = elbo.item() / xdim
+		cma[ei, xi] = totalbits / (xdim * (xi + 1))
+		total[ei, xi] = totalbits
 
-			iterator.set_postfix_str(s=f"N:{nets[ei,:xi+1].mean():.2f}±{nets[ei,:xi+1].std():.2f}, D:{nets[ei,:xi+1].mean()-elbos[ei,:xi+1].mean():.4f}, C: {cma[ei,:xi+1].mean():.2f}, T: {totalbits:.0f}", refresh=False)
+		iterator.set_postfix_str(s=f"N:{nets[ei,:xi+1].mean():.2f}±{nets[ei,:xi+1].std():.2f}, D:{nets[ei,:xi+1].mean()-elbos[ei,:xi+1].mean():.4f}, C: {cma[ei,:xi+1].mean():.2f}, T: {totalbits:.0f}", refresh=False)
 
-		# write state to file
-		del state[0:excess_state_len - 1]
-		os.makedirs(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
-		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "wb") as fp:
-			# #state = check_states(state)
-			pickle.dump(state, fp)
+	# write state to file
+	del state[0:excess_state_len - 1]
+	os.makedirs(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}", exist_ok=True)
+	with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{args.dataset}_{args.code_level}_{quantbits}bits_nz{nz}_ndata{ndatapoints}_experiment{ei + 1}", "wb") as fp:
+		# #state = check_states(state)
+		pickle.dump(state, fp)
+	# if not decompress:
+	# 	continue
+	# state = None
+	# # open state file
+	# with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{args.dataset}_{args.code_level}_{quantbits}bits_nz{nz}_ndata{ndatapoints}_experiment{ei + 1}", "rb") as fp:
+	# 	state = pickle.load(fp)
+	#
+	#
+	#
+	# # <===== RECEIVER =====>
+	# datapoints.reverse()
+	# iterator = tqdm(range(len(datapoints)), desc="Receiver", postfix=f"decoded {None}",disable=args.disable_tqdm)
+	# for xi in iterator:
+	# 	(x, _, _) = datapoints[xi]
+	# 	x = x.to(device).view(xdim)
+	#
+	# 	# prior
+	# 	cdfs = logistic_cdf(zendpoints[-1].t(), torch.zeros(1, device=device, dtype=type), torch.ones(1, device=device, dtype=type)).t()
+	# 	pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+	# 	pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+	#
+	# 	# decode z
+	# 	state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
+	#
+	# 	if bitswap:
+	# 		# < ===== Bit-Swap ====>
+	# 		# inference and generative model
+	# 		for zi in reversed(range(nz)):
+	# 			# generative model
+	# 			z = zcentres[zi, zrange, zsymtop]
+	# 			mu, scale = model.generate(zi)(given=z)
+	# 			cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t()  # most expensive calculation?
+	# 			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+	# 			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+	#
+	# 			# decode z or x
+	# 			# state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 8).decode(state)
+	# 			state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 9).decode(state)
+	# 			# inference model
+	# 			input = zcentres[zi - 1, zrange, sym] if zi > 0 else xcentres[xrange, sym]
+	# 			mu, scale = model.infer(zi)(given=input)
+	# 			cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
+	# 			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+	# 			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+	#
+	# 			# encode z
+	# 			state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
+	#
+	# 			zsymtop = sym
+	# 		k=1
+	# 		assert torch.all(x.long() == zsymtop), f"decoded datapoint does not match {xi + 1}"
+	#
+	# 	else:
+	# 		# < ===== BB-ANS ====>
+	# 		# inference and generative model
+	# 		zs = [zsymtop]
+	# 		for zi in reversed(range(nz)):
+	# 			# generative model
+	# 			z = zcentres[zi, zrange, zsymtop]
+	# 			mu, scale = model.generate(zi)(given=z)
+	# 			cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t() # most expensive calculation?
+	# 			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+	# 			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+	#
+	# 			# decode z or x
+	# 			# state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 8).decode(state)
+	# 			state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 9).decode(state)
+	# 			zs.append(sym)
+	# 			zsymtop = sym
+	#
+	# 		zsymtop = zs.pop(0)
+	# 		for zi in reversed(range(nz)):
+	# 			# inference model
+	# 			sym = zs.pop(0) if zi > 0 else zs[0]
+	#
+	# 			input = zcentres[zi - 1, zrange, sym] if zi > 0 else xcentres[xrange, sym]
+	# 			mu, scale = model.infer(zi)(given=input)
+	# 			cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
+	# 			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
+	# 			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
+	#
+	# 			# encode z
+	# 			state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
+	#
+	# 			zsymtop = sym
+	# 		# check if decoded datapoint matches the real datapoint
+	# 		assert torch.all(x.long() == zs[0]), f"decoded datapoint does not match {xi + 1}"
+	# 	iterator.set_postfix_str(s=f"decoded {len(datapoints) - xi}")
 
-		state = None
-		# open state file
-		with open(f"bitstreams/code/nz{nz}/{'Bit-Swap' if bitswap else 'BB-ANS'}/{'Bit-Swap' if bitswap else 'BB-ANS'}_{quantbits}bits_nz{nz}_ndata{ndatapoints}", "rb") as fp:
-			state = pickle.load(fp)
-
-		if not decompress:
-			continue
-
-		# <===== RECEIVER =====>
-		datapoints.reverse()
-		iterator = tqdm(range(len(datapoints)), desc="Receiver", postfix=f"decoded {None}")
-		for xi in iterator:
-			(x, _, _) = datapoints[xi]
-			x = x.to(device).view(xdim)
-
-			# prior
-			cdfs = logistic_cdf(zendpoints[-1].t(), torch.zeros(1, device=device, dtype=type),
-								torch.ones(1, device=device, dtype=type)).t()
-			pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-			pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
-
-			# decode z
-			state, zsymtop = ANS(pmfs, bits=ansbits, quantbits=quantbits).decode(state)
-
-			if bitswap:
-				# < ===== Bit-Swap ====>
-				# inference and generative model
-				for zi in reversed(range(nz)):
-					# generative model
-					z = zcentres[zi, zrange, zsymtop]
-					mu, scale = model.generate(zi)(given=z)
-					cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t()  # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
-
-					# decode z or x
-					# state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 8).decode(state)
-					state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 9).decode(state)
-					# inference model
-					input = zcentres[zi - 1, zrange, sym] if zi > 0 else xcentres[xrange, sym]
-					mu, scale = model.infer(zi)(given=input)
-					cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
-
-					# encode z
-					state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
-
-					zsymtop = sym
-				k=1
-				assert torch.all(x.long() == zsymtop), f"decoded datapoint does not match {xi + 1}"
-
-			else:
-				# < ===== BB-ANS ====>
-				# inference and generative model
-				zs = [zsymtop]
-				for zi in reversed(range(nz)):
-					# generative model
-					z = zcentres[zi, zrange, zsymtop]
-					mu, scale = model.generate(zi)(given=z)
-					cdfs = logistic_cdf((zendpoints[zi - 1] if zi > 0 else xendpoints).t(), mu, scale).t() # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
-
-					# decode z or x
-					# state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 8).decode(state)
-					state, sym = ANS(pmfs, bits=ansbits, quantbits=quantbits if zi > 0 else 9).decode(state)
-					zs.append(sym)
-					zsymtop = sym
-
-				zsymtop = zs.pop(0)
-				for zi in reversed(range(nz)):
-					# inference model
-					sym = zs.pop(0) if zi > 0 else zs[0]
-
-					input = zcentres[zi - 1, zrange, sym] if zi > 0 else xcentres[xrange, sym]
-					mu, scale = model.infer(zi)(given=input)
-					cdfs = logistic_cdf(zendpoints[zi].t(), mu, scale).t() # most expensive calculation?
-					pmfs = cdfs[:, 1:] - cdfs[:, :-1]
-					pmfs = torch.cat((cdfs[:, 0].unsqueeze(1), pmfs, 1. - cdfs[:, -1].unsqueeze(1)), dim=1)
-
-					# encode z
-					state = ANS(pmfs, bits=ansbits, quantbits=quantbits).encode(state, zsymtop)
-
-					zsymtop = sym
-				# check if decoded datapoint matches the real datapoint
-				assert torch.all(x.long() == zs[0]), f"decoded datapoint does not match {xi + 1}"
-			iterator.set_postfix_str(s=f"decoded {len(datapoints) - xi}")
-
-		# check if the initial state matches the output state
-		assert initialstate == state
+	# check if the initial state matches the output state
+	# assert initialstate == state
 
 	print(f"N:{nets.mean():.4f}±{nets.std():.2f}, E:{elbos.mean():.4f}±{elbos.std():.2f}, D:{nets.mean() - elbos.mean():.6f}")
 
@@ -390,6 +400,12 @@ if __name__ == '__main__':
 	parser.add_argument('--vae_path', default=None, type=str)
 	parser.add_argument('--ndata', default=100, type=int)
 	parser.add_argument('--kernel', default=3, type=int)
+	parser.add_argument('--dataset',  type=str)
+	parser.add_argument('--code_level', type=str)
+	parser.add_argument("--disable_tqdm", type=int, default=0)
+	parser.add_argument("--slurm_id", type=int, default=3)
+	parser.add_argument("--n_group", type=int, default=4)
+	# parser.add_argument('--codes_path', type=str)
 	args = parser.parse_args()
 	print(args)
 
@@ -397,8 +413,8 @@ if __name__ == '__main__':
 	nz = args.nz
 	quantbits = args.quantbits
 	bitswap = args.bitswap
-	xs = [1, 4, 4]
-	for nz in [nz]:
-		for bits in [quantbits]:
-			for bitswap in [bitswap]:
-				compress(bits, nz, bitswap, gpu, xs, args)
+	# xs = [1, 4, 4]
+	# for nz in [nz]:
+	# 	for bits in [quantbits]:
+	# 		for bitswap in [bitswap]:
+	compress(quantbits, nz, bitswap, gpu, args)
